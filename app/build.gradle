@@ -120,3 +120,11 @@ dependencies {
     implementation 'io.reactivex.rxjava2:rxjava:2.2.4'
     implementation 'io.reactivex.rxjava2:rxandroid:2.1.0'
 }
+
+
+//private static final double[][] DEFAULT_VERTICES = {
+//    {  33.991295, -118.055938 },
+//    {  33.991792, -118.055947 },
+//    {  33.991788, -118.055521 },
+//    {  33.991445, -118.055538 }
+//};

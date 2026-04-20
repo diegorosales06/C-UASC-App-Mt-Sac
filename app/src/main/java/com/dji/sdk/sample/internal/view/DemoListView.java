@@ -65,6 +65,9 @@ import com.dji.sdk.sample.internal.model.GroupItem;
 import com.dji.sdk.sample.internal.model.ListItem;
 import com.squareup.otto.Subscribe;
 
+
+import com.dji.sdk.sample.demo.geofencing.GeofencingView;
+
 /**
  * This view is in charge of showing all the demos in a list.
  */
@@ -197,7 +200,8 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.flight_controller_listview_virtual_stick, VirtualStickView.class),
                 new GroupItem(R.string.flight_controller_listview_intelligent_flight_assistant,
                         FlightAssistantPushDataView.class),
-                new GroupItem(R.string.flight_controller_listview_networkRTK, NetworkRTKView.class));
+                new GroupItem(R.string.flight_controller_listview_networkRTK, NetworkRTKView.class),
+                new GroupItem(R.string.component_listview_geofencing, GeofencingView.class));
 
         builder.addGroup(R.string.component_listview_remote_controller,
                 false,
