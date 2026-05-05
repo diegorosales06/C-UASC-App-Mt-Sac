@@ -65,9 +65,10 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // Default hardcoded fence vertices (Mt. SAC area)
     // These are pre-loaded on first launch; user can add/clear from here
     private static final double[][] DEFAULT_VERTICES = {
-    {  34.04617438715812, -117.84557606131044},
-    {  34.046386000758645, -117.84524699712334 },
-    {  34.046623412154894, -117.84562697335046 }
+    {  34.04618635227991, -117.84552701364355 },
+    {  34.04632498120861, -117.84524530311664 },
+    {  34.04658300697332, -117.84539805413424 },
+            {   34.04646801720643, -117.84579969397946   }
     };
 
     // ---------------------------------------------------------------------------------
