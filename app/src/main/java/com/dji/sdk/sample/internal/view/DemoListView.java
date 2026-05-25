@@ -1,4 +1,5 @@
 package com.dji.sdk.sample.internal.view;
+import com.dji.sdk.sample.demo.drop.PayloadDropMissionView;
 
 import android.content.Context;
 import android.util.AttributeSet;
@@ -207,7 +208,8 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.component_listview_geofencing, GeofencingView.class),
                 new GroupItem(R.string.waypoint_mission_title, WaypointMissionView.class),
 
-                new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class)
+                new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class),
+                new GroupItem(R.string.payload_drop_mission_title, PayloadDropMissionView.class)
 
                 );
 
