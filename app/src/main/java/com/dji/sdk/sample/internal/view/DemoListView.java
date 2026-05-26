@@ -69,6 +69,8 @@ import com.squareup.otto.Subscribe;
 import com.dji.sdk.sample.demo.geofencing.GeofencingView;
 import com.dji.sdk.sample.demo.waypoint.WaypointMissionView;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.VirtualStickWaypointView;
+import com.dji.sdk.sample.demo.LEDcontrol.LEDControlView;
+
 
 
 /**
@@ -207,7 +209,9 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.component_listview_geofencing, GeofencingView.class),
                 new GroupItem(R.string.waypoint_mission_title, WaypointMissionView.class),
 
-                new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class)
+                new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class),
+                new GroupItem(R.string.LEDcontrol_title, LEDControlView.class)
+
 
                 );
 

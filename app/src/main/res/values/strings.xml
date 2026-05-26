@@ -1,12 +1,13 @@
 <resources>
-    <string name="sample_app_name">Mt. Sac Drone V1.12</string>
+    <string name="sample_app_name">Mt. Sac Drone V1.13</string>
     <string name="action_settings">Settings</string>
 
 
 
     <string name="component_listview_geofencing">Geofencing</string>
+    <string name="LEDcontrol_title">LED Control</string>
     <string name="waypoint_mission_title">Waypoint Mission</string>
-    <string name="virtualStickWaypint_mission_title">VS Waypoint Mission</string>
+    <string name="virtualStickWaypint_mission_title">Waypoint Mission</string>
 
     <string name="sdk_version">DJI SDK Version: %1$s</string>
     <string name="hint_firmware_upgrade_in_LDM">Enable firmware upgrade under LDM mode</string>
