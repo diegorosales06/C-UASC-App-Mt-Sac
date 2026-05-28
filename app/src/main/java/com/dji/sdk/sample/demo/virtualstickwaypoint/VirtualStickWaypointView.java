@@ -580,6 +580,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     }
 
     /**
+     *
      * One iteration of the control loop.
      *
      * This is the core of the waypoint navigation logic:
