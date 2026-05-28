@@ -1,0 +1,219 @@
+=====	Device Info	=====
+manufacture:Google
+product:raven
+model:Pixel 6 Pro
+version:BP1A.250305.019
+android version:15
+build num:
+build name:
+sdk version:35
+=====	App Info	=====
+versionCode:1
+versionName:null
+=====	Crash	=====
+java.lang.IllegalStateException: Task already scheduled or cancelled
+	at java.util.Timer.sched(Timer.java:474)
+	at java.util.Timer.schedule(Timer.java:295)
+	at com.dji.sdk.sample.demo.flightcontroller.VirtualStickView$2.onTouch(:206)
+	at com.dji.sdk.sample.internal.utils.OnScreenJoystick.pushTouchEvent(:202)
+	at com.dji.sdk.sample.internal.utils.OnScreenJoystick.access$200(:46)
+	at com.dji.sdk.sample.internal.utils.OnScreenJoystick$JoystickThread.run(:245)
+
+=======Thread info======Crash name:java.lang.IllegalStateException: Task already scheduled or cancelled
+ Cause is:null
+ Thread name is:Thread-1781 1970
+ Thread count is:135
+ Fd count is:311
+ 
+Name:	.dji.sdk.sample
+Umask:	0077
+State:	R (running)
+Tgid:	24505
+Ngid:	0
+Pid:	24505
+PPid:	847
+TracerPid:	0
+Uid:	10034	10034	10034	10034
+Gid:	10034	10034	10034	10034
+FDSize:	512
+Groups:	3001 3002 3003 9997 20034 50034 
+VmPeak:	20685360 kB
+VmSize:	20548752 kB
+VmLck:	      64 kB
+VmPin:	       0 kB
+VmHWM:	  540584 kB
+VmRSS:	  382768 kB
+RssAnon:	  164180 kB
+RssFile:	  189280 kB
+RssShmem:	   29308 kB
+VmData:	 3398268 kB
+VmStk:	    8192 kB
+VmExe:	       4 kB
+VmLib:	  211272 kB
+VmPTE:	    2760 kB
+VmSwap:	    3972 kB
+CoreDumping:	0
+THP_enabled:	1
+Threads:	201
+SigQ:	0/42018
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000080001204
+SigIgn:	0000000000000001
+SigCgt:	0000006e400084f8
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	ff
+Cpus_allowed_list:	0-7
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	29760
+nonvoluntary_ctxt_switches:	759
+
+============Start dump thread info============
+total =135
+线程号：46 = Signal Catcher
+线程号：48 = Jit thread pool worker thread 0
+线程号：49 = HeapTaskDaemon
+线程号：50 = ReferenceQueueDaemon
+线程号：51 = FinalizerDaemon
+线程号：52 = FinalizerWatchdogDaemon
+线程号：56 = Profile Saver
+线程号：172 = process reaper
+线程号：2 = main
+线程号：53 = binder:24505_1
+线程号：54 = binder:24505_2
+线程号：55 = binder:24505_3
+线程号：57 = binder:24505_4
+线程号：58 = RenderThread
+线程号：60 = RxCachedWorkerPoolEvictor-1
+线程号：61 = RxComputationThreadPool-1
+线程号：62 = RxComputationThreadPool-2
+线程号：63 = dji_background_thread
+线程号：64 = android.bg
+线程号：65 = hwuiTask1
+线程号：66 = hwuiTask0
+线程号：59 = Bluetooth
+线程号：67 = SurfaceSyncGroupTimer
+线程号：68 = AsyncTask #1
+线程号：69 = LogHandlerThread
+线程号：70 = SingleBackgroundLooper
+线程号：71 = UrgentThreadPool#1
+线程号：72 = dji_sdk_callback_thread
+线程号：74 = UrgentThreadPool#2
+线程号：75 = CommonThreadPool#1
+线程号：76 = midware_background_thread
+线程号：77 = DataBaseProcessor
+线程号：78 = ThreadPoolUtil:handlerThread
+线程号：79 = DJIVideoPackManager-data-parser
+线程号：80 = xss-data-parser
+线程号：81 = CommonThreadPool#2
+线程号：82 = CommonThreadPool#3
+线程号：96 = ddf-data-parser
+线程号：97 = parse_package
+线程号：98 = file_download_thread
+线程号：103 = parse_package
+线程号：104 = file_download_thread
+线程号：106 = Thread-9
+线程号：107 = Thread-10
+线程号：108 = Thread-11
+线程号：109 = Thread-12
+线程号：111 = Thread-14
+线程号：110 = Thread-13
+线程号：112 = RxComputationThreadPool-3
+线程号：113 = RxComputationThreadPool-4
+线程号：114 = RxComputationThreadPool-5
+线程号：115 = RxComputationThreadPool-6
+线程号：116 = RxComputationThreadPool-7
+线程号：117 = RxComputationThreadPool-8
+线程号：118 = RxSchedulerPurge-1
+线程号：119 = RxCachedWorkerPoolEvictor-1
+线程号：120 = RxComputationThreadPool-1
+线程号：121 = RxComputationThreadPool-2
+线程号：122 = RxComputationThreadPool-3
+线程号：123 = RxComputationThreadPool-4
+线程号：124 = RxComputationThreadPool-5
+线程号：125 = RxComputationThreadPool-6
+线程号：126 = RxComputationThreadPool-7
+线程号：127 = RefQueueWorker@org.apache.http.impl.conn.tsccm.ConnPoolByRoute@ee3aef1
+线程号：128 = CommonThreadPool#4
+线程号：129 = CommonThreadPool#5
+线程号：130 = thread_link_mode
+线程号：134 = CommonThreadPool#6
+线程号：138 = CommonThreadPool#7
+线程号：140 = RxCachedThreadScheduler-1
+线程号：141 = RxCachedThreadScheduler-2
+线程号：142 = RxCachedThreadScheduler-3
+线程号：143 = OkHttp Dispatcher
+线程号：144 = OkHttp Dispatcher
+线程号：145 = battery validating thread
+线程号：146 = OkHttp Dispatcher
+线程号：147 = queued-work-looper
+线程号：148 = CommonThreadPool#8
+线程号：157 = OkHttp Dispatcher
+线程号：158 = OkHttp Dispatcher
+线程号：164 = OkHttp Dispatcher
+线程号：165 = OkHttp Dispatcher
+线程号：166 = OkHttp Dispatcher
+线程号：167 = geo-sync-file
+线程号：168 = UrgentThreadPool#3
+线程号：169 = UrgentThreadPool#4
+线程号：170 = UrgentThreadPool#5
+线程号：171 = UrgentThreadPool#6
+线程号：181 = DJI Log #1
+线程号：187 = CommonThreadPool#9
+线程号：190 = pool-3-thread-1
+线程号：191 = SDKAgentManager
+线程号：192 = OkHttp Dispatcher
+线程号：200 = OkHttp Dispatcher
+线程号：204 = recvBufferThread
+线程号：213 = parseVideoFromCamThread
+线程号：216 = async_parser
+线程号：219 = parseVideoFromFpvThread
+线程号：222 = UrgentThreadPool#7
+线程号：223 = UrgentThreadPool#8
+线程号：224 = UrgentThreadPool#9
+线程号：244 = pool-3-thread-2
+线程号：249 = pool-3-thread-3
+线程号：251 = pool-3-thread-4
+线程号：271 = DJI Log #2
+线程号：272 = writeFlycLog
+线程号：273 = monitor-handler-thread
+线程号：278 = RxComputationThreadPool-8
+线程号：279 = OkHttp ConnectionPool
+线程号：280 = Okio Watchdog
+线程号：285 = DJI Log #3
+线程号：288 = diagnostics check compass thread
+线程号：293 = RxCachedThreadScheduler-1
+线程号：418 = OkHttp Dispatcher
+线程号：421 = OkHttp Dispatcher
+线程号：493 = OkHttp ConnectionPool
+线程号：514 = OkHttp Dispatcher
+线程号：536 = OkHttp ConnectionPool
+线程号：546 = Okio Watchdog
+线程号：547 = OkHttp ConnectionPool
+线程号：551 = RxCachedThreadScheduler-4
+线程号：706 = AreaCodeWorker
+线程号：717 = binder:24505_5
+线程号：785 = parse_package
+线程号：786 = file_download_thread
+线程号：787 = fetch_media_task_scheduler_thread
+线程号：788 = MediaManager
+线程号：789 = MediaManager
+线程号：790 = fetching_file
+线程号：1889 = InsetsAnimations
+线程号：1890 = InteractionJankMonitor-Worker
+线程号：1969 = Thread-1780
+线程号：1970 = Thread-1781
+线程号：1973 = Timer-6
+线程号：1974 = Timer-7
+============end of dump ==========
+

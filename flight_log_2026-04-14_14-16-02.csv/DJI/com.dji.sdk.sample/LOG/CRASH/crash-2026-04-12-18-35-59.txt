@@ -1,0 +1,216 @@
+=====	Device Info	=====
+manufacture:Google
+product:raven
+model:Pixel 6 Pro
+version:BP1A.250305.019
+android version:15
+build num:
+build name:
+sdk version:35
+=====	App Info	=====
+versionCode:1
+versionName:null
+=====	Crash	=====
+java.lang.RuntimeException: Class VirtualStickView exception: null
+	at com.dji.sdk.sample.internal.controller.ExpandableListAdapter.lambda$getChildView$0(:159)
+	at com.dji.sdk.sample.internal.controller.ExpandableListAdapter.a(Unknown Source:0)
+	at com.dji.sdk.sample.internal.controller.a.onClick(Unknown Source:4)
+	at android.view.View.performClick(View.java:8081)
+	at android.view.View.performClickInternal(View.java:8058)
+	at android.view.View.-$$Nest$mperformClickInternal(Unknown Source:0)
+	at android.view.View$PerformClick.run(View.java:31517)
+	at android.os.Handler.handleCallback(Handler.java:991)
+	at android.os.Handler.dispatchMessage(Handler.java:102)
+	at android.os.Looper.loopOnce(Looper.java:232)
+	at android.os.Looper.loop(Looper.java:317)
+	at android.app.ActivityThread.main(ActivityThread.java:8934)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:591)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:911)
+
+=======Thread info======Crash name:java.lang.RuntimeException: Class VirtualStickView exception: null
+ Cause is:null
+ Thread name is:main 2
+ Thread count is:123
+ Fd count is:276
+ 
+Name:	.dji.sdk.sample
+Umask:	0077
+State:	R (running)
+Tgid:	22445
+Ngid:	0
+Pid:	22445
+PPid:	869
+TracerPid:	0
+Uid:	10034	10034	10034	10034
+Gid:	10034	10034	10034	10034
+FDSize:	512
+Groups:	3001 3002 3003 9997 20034 50034 
+VmPeak:	20426408 kB
+VmSize:	20177056 kB
+VmLck:	      60 kB
+VmPin:	       0 kB
+VmHWM:	  513308 kB
+VmRSS:	  414184 kB
+RssAnon:	  201796 kB
+RssFile:	  180808 kB
+RssShmem:	   31580 kB
+VmData:	 3361728 kB
+VmStk:	    8192 kB
+VmExe:	       4 kB
+VmLib:	  211272 kB
+VmPTE:	    2716 kB
+VmSwap:	    3320 kB
+CoreDumping:	0
+THP_enabled:	1
+Threads:	193
+SigQ:	2/42018
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000080001204
+SigIgn:	0000000000000001
+SigCgt:	0000006e400084f8
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	ff
+Cpus_allowed_list:	0-7
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	21825
+nonvoluntary_ctxt_switches:	1036
+
+============Start dump thread info============
+total =123
+线程号：46 = Signal Catcher
+线程号：48 = HeapTaskDaemon
+线程号：50 = Jit thread pool worker thread 0
+线程号：49 = ReferenceQueueDaemon
+线程号：51 = FinalizerDaemon
+线程号：52 = FinalizerWatchdogDaemon
+线程号：56 = Profile Saver
+线程号：12208 = process reaper
+线程号：2 = main
+线程号：53 = binder:22445_1
+线程号：54 = binder:22445_2
+线程号：55 = binder:22445_3
+线程号：57 = binder:22445_4
+线程号：58 = RenderThread
+线程号：60 = RxCachedWorkerPoolEvictor-1
+线程号：61 = RxComputationThreadPool-1
+线程号：62 = RxComputationThreadPool-2
+线程号：63 = dji_background_thread
+线程号：64 = android.bg
+线程号：65 = hwuiTask0
+线程号：66 = hwuiTask1
+线程号：59 = Bluetooth
+线程号：67 = SurfaceSyncGroupTimer
+线程号：68 = AsyncTask #1
+线程号：69 = LogHandlerThread
+线程号：70 = SingleBackgroundLooper
+线程号：71 = UrgentThreadPool#1
+线程号：72 = dji_sdk_callback_thread
+线程号：74 = UrgentThreadPool#2
+线程号：75 = CommonThreadPool#1
+线程号：76 = midware_background_thread
+线程号：77 = DataBaseProcessor
+线程号：78 = ThreadPoolUtil:handlerThread
+线程号：79 = DJIVideoPackManager-data-parser
+线程号：80 = parse_package
+线程号：81 = file_download_thread
+线程号：82 = parse_package
+线程号：83 = file_download_thread
+线程号：85 = xss-data-parser
+线程号：86 = CommonThreadPool#2
+线程号：87 = CommonThreadPool#3
+线程号：95 = Thread-5
+线程号：96 = Thread-6
+线程号：97 = Thread-7
+线程号：98 = Thread-8
+线程号：99 = Thread-9
+线程号：100 = Thread-10
+线程号：106 = ddf-data-parser
+线程号：112 = RxComputationThreadPool-3
+线程号：113 = RxComputationThreadPool-4
+线程号：114 = RxComputationThreadPool-5
+线程号：115 = RxComputationThreadPool-6
+线程号：116 = RxComputationThreadPool-7
+线程号：117 = RxComputationThreadPool-8
+线程号：118 = RxSchedulerPurge-1
+线程号：119 = RxCachedWorkerPoolEvictor-1
+线程号：120 = RxComputationThreadPool-1
+线程号：121 = RxComputationThreadPool-2
+线程号：122 = RxComputationThreadPool-3
+线程号：123 = RxComputationThreadPool-4
+线程号：124 = RxComputationThreadPool-5
+线程号：125 = RxComputationThreadPool-6
+线程号：126 = RxComputationThreadPool-7
+线程号：127 = RefQueueWorker@org.apache.http.impl.conn.tsccm.ConnPoolByRoute@7db4392
+线程号：128 = CommonThreadPool#4
+线程号：129 = CommonThreadPool#5
+线程号：130 = thread_link_mode
+线程号：134 = CommonThreadPool#6
+线程号：138 = CommonThreadPool#7
+线程号：140 = RxCachedThreadScheduler-1
+线程号：141 = RxCachedThreadScheduler-2
+线程号：142 = RxCachedThreadScheduler-3
+线程号：143 = battery validating thread
+线程号：147 = CommonThreadPool#8
+线程号：165 = geo-sync-file
+线程号：167 = UrgentThreadPool#3
+线程号：168 = UrgentThreadPool#4
+线程号：169 = UrgentThreadPool#5
+线程号：170 = UrgentThreadPool#6
+线程号：173 = CommonThreadPool#9
+线程号：174 = OkHttp ConnectionPool
+线程号：176 = OkHttp ConnectionPool
+线程号：178 = DJI Log #1
+线程号：191 = SDKAgentManager
+线程号：193 = pool-3-thread-1
+线程号：195 = queued-work-looper
+线程号：223 = UrgentThreadPool#7
+线程号：224 = UrgentThreadPool#8
+线程号：225 = UrgentThreadPool#9
+线程号：228 = OkHttp ConnectionPool
+线程号：230 = OkHttp ConnectionPool
+线程号：232 = DJI Log #2
+线程号：233 = Okio Watchdog
+线程号：236 = RxCachedThreadScheduler-4
+线程号：329 = DJI Log #3
+线程号：415 = pool-3-thread-2
+线程号：416 = diagnostics check compass thread
+线程号：429 = pool-3-thread-3
+线程号：444 = writeFlycLog
+线程号：445 = monitor-handler-thread
+线程号：448 = Timer-5
+线程号：451 = RxComputationThreadPool-8
+线程号：526 = AreaCodeWorker
+线程号：928 = binder:22445_5
+线程号：5563 = Timer-13
+线程号：5574 = InsetsAnimations
+线程号：5575 = InteractionJankMonitor-Worker
+线程号：5577 = stream data observing thread
+线程号：5728 = pool-3-thread-5
+线程号：5732 = diagnostics check compass thread
+线程号：8157 = binder:22445_6
+线程号：9708 = binder:22445_7
+线程号：9987 = binder:22445_8
+线程号：10661 = OkHttp Dispatcher
+线程号：10662 = Okio Watchdog
+线程号：12186 = SwUdpService timer
+线程号：12194 = nhf timer
+线程号：12196 = P3CCameraService timer
+线程号：12197 = Timer-21
+线程号：12198 = Timer-22
+线程号：12199 = Timer-23
+线程号：12200 = Timer-24
+线程号：12201 = Timer-25
+============end of dump ==========
+

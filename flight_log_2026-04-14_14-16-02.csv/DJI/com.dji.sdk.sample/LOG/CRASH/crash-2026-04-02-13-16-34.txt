@@ -1,0 +1,235 @@
+=====	Device Info	=====
+manufacture:Google
+product:raven
+model:Pixel 6 Pro
+version:BP1A.250305.019
+android version:15
+build num:
+build name:
+sdk version:35
+=====	App Info	=====
+versionCode:1
+versionName:null
+=====	Crash	=====
+java.lang.SecurityException: Need android.permission.BLUETOOTH_CONNECT permission for android.content.AttributionSource@72b5a6c8: enable
+	at android.os.Parcel.createExceptionOrNull(Parcel.java:3261)
+	at android.os.Parcel.createException(Parcel.java:3245)
+	at android.os.Parcel.readException(Parcel.java:3228)
+	at android.os.Parcel.readException(Parcel.java:3170)
+	at android.bluetooth.IBluetoothManager$Stub$Proxy.enable(IBluetoothManager.java:454)
+	at android.bluetooth.BluetoothAdapter.enable(BluetoothAdapter.java:1646)
+	at dji.midware.ble.BLE.enable(Unknown Source:12)
+	at dji.midware.ble.BluetoothLeService.enableBLE(Unknown Source:2)
+	at dji.midware.ble.BluetoothLeService.startScan(Unknown Source:14)
+	at dji.sdk.sdkmanager.BluetoothProductConnector.searchBluetoothProducts(Unknown Source:32)
+	at com.dji.sdk.sample.demo.bluetooth.BluetoothView.onClick(:98)
+	at android.view.View.performClick(View.java:8081)
+	at android.view.View.performClickInternal(View.java:8058)
+	at android.view.View.-$$Nest$mperformClickInternal(Unknown Source:0)
+	at android.view.View$PerformClick.run(View.java:31517)
+	at android.os.Handler.handleCallback(Handler.java:991)
+	at android.os.Handler.dispatchMessage(Handler.java:102)
+	at android.os.Looper.loopOnce(Looper.java:232)
+	at android.os.Looper.loop(Looper.java:317)
+	at android.app.ActivityThread.main(ActivityThread.java:8934)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:591)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:911)
+Caused by: android.os.RemoteException: Remote stack trace:
+	at com.android.server.bluetooth.BtPermissionUtils.checkConnectPermissionForDataDelivery(BtPermissionUtils.java:101)
+	at com.android.server.bluetooth.BtPermissionUtils.checkBluetoothPermissions(BtPermissionUtils.java:339)
+	at com.android.server.bluetooth.BtPermissionUtils.callerCanToggle(BtPermissionUtils.java:125)
+	at com.android.server.bluetooth.BluetoothServiceBinder.enable(BluetoothServiceBinder.java:102)
+	at android.bluetooth.IBluetoothManager$Stub.onTransact(IBluetoothManager.java:248)
+
+android.os.RemoteException: Remote stack trace:
+	at com.android.server.bluetooth.BtPermissionUtils.checkConnectPermissionForDataDelivery(BtPermissionUtils.java:101)
+	at com.android.server.bluetooth.BtPermissionUtils.checkBluetoothPermissions(BtPermissionUtils.java:339)
+	at com.android.server.bluetooth.BtPermissionUtils.callerCanToggle(BtPermissionUtils.java:125)
+	at com.android.server.bluetooth.BluetoothServiceBinder.enable(BluetoothServiceBinder.java:102)
+	at android.bluetooth.IBluetoothManager$Stub.onTransact(IBluetoothManager.java:248)
+
+
+=======Thread info======Crash name:java.lang.SecurityException: Need android.permission.BLUETOOTH_CONNECT permission for android.content.AttributionSource@72b5a6c8: enable
+ Cause is:android.os.RemoteException: Remote stack trace:
+	at com.android.server.bluetooth.BtPermissionUtils.checkConnectPermissionForDataDelivery(BtPermissionUtils.java:101)
+	at com.android.server.bluetooth.BtPermissionUtils.checkBluetoothPermissions(BtPermissionUtils.java:339)
+	at com.android.server.bluetooth.BtPermissionUtils.callerCanToggle(BtPermissionUtils.java:125)
+	at com.android.server.bluetooth.BluetoothServiceBinder.enable(BluetoothServiceBinder.java:102)
+	at android.bluetooth.IBluetoothManager$Stub.onTransact(IBluetoothManager.java:248)
+
+ Thread name is:main 2
+ Thread count is:114
+ Fd count is:285
+ 
+Name:	.dji.sdk.sample
+Umask:	0077
+State:	R (running)
+Tgid:	22354
+Ngid:	0
+Pid:	22354
+PPid:	847
+TracerPid:	0
+Uid:	10034	10034	10034	10034
+Gid:	10034	10034	10034	10034
+FDSize:	512
+Groups:	3001 3002 3003 9997 20034 50034 
+VmPeak:	19855748 kB
+VmSize:	19855748 kB
+VmLck:	      60 kB
+VmPin:	       0 kB
+VmHWM:	  343384 kB
+VmRSS:	  343184 kB
+RssAnon:	  159716 kB
+RssFile:	  158000 kB
+RssShmem:	   25468 kB
+VmData:	 3309032 kB
+VmStk:	    8192 kB
+VmExe:	       4 kB
+VmLib:	  211272 kB
+VmPTE:	    2272 kB
+VmSwap:	    3992 kB
+CoreDumping:	0
+THP_enabled:	1
+Threads:	166
+SigQ:	0/42018
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000080001204
+SigIgn:	0000000000000001
+SigCgt:	0000006e400084f8
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	ff
+Cpus_allowed_list:	0-7
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	848
+nonvoluntary_ctxt_switches:	83
+
+============Start dump thread info============
+total =114
+线程号：36 = Signal Catcher
+线程号：38 = Jit thread pool worker thread 0
+线程号：39 = HeapTaskDaemon
+线程号：40 = ReferenceQueueDaemon
+线程号：41 = FinalizerDaemon
+线程号：42 = FinalizerWatchdogDaemon
+线程号：46 = Profile Saver
+线程号：162 = process reaper
+线程号：2 = main
+线程号：43 = binder:22354_1
+线程号：44 = binder:22354_2
+线程号：45 = binder:22354_3
+线程号：47 = RenderThread
+线程号：49 = RxCachedWorkerPoolEvictor-1
+线程号：50 = RxComputationThreadPool-1
+线程号：51 = RxComputationThreadPool-2
+线程号：52 = dji_background_thread
+线程号：53 = android.bg
+线程号：54 = hwuiTask1
+线程号：55 = hwuiTask0
+线程号：48 = Bluetooth
+线程号：56 = SurfaceSyncGroupTimer
+线程号：57 = AsyncTask #1
+线程号：58 = LogHandlerThread
+线程号：59 = SingleBackgroundLooper
+线程号：60 = UrgentThreadPool#1
+线程号：61 = dji_sdk_callback_thread
+线程号：63 = UrgentThreadPool#2
+线程号：64 = CommonThreadPool#1
+线程号：65 = midware_background_thread
+线程号：66 = DataBaseProcessor
+线程号：67 = ThreadPoolUtil:handlerThread
+线程号：68 = DJIVideoPackManager-data-parser
+线程号：69 = parse_package
+线程号：70 = file_download_thread
+线程号：71 = parse_package
+线程号：72 = file_download_thread
+线程号：74 = xss-data-parser
+线程号：75 = CommonThreadPool#2
+线程号：76 = CommonThreadPool#3
+线程号：82 = Thread-3
+线程号：83 = Thread-4
+线程号：84 = Thread-5
+线程号：85 = Thread-6
+线程号：86 = Thread-7
+线程号：87 = Thread-9
+线程号：96 = ddf-data-parser
+线程号：101 = RxComputationThreadPool-3
+线程号：102 = RxComputationThreadPool-4
+线程号：103 = RxComputationThreadPool-5
+线程号：104 = RxComputationThreadPool-6
+线程号：105 = RxComputationThreadPool-7
+线程号：106 = RxComputationThreadPool-8
+线程号：107 = RxSchedulerPurge-1
+线程号：108 = RxCachedWorkerPoolEvictor-1
+线程号：109 = RxComputationThreadPool-1
+线程号：110 = RxComputationThreadPool-2
+线程号：111 = RxComputationThreadPool-3
+线程号：112 = RxComputationThreadPool-4
+线程号：113 = RxComputationThreadPool-5
+线程号：114 = RxComputationThreadPool-6
+线程号：115 = RxComputationThreadPool-7
+线程号：116 = RefQueueWorker@org.apache.http.impl.conn.tsccm.ConnPoolByRoute@5a51ad6
+线程号：117 = CommonThreadPool#4
+线程号：118 = CommonThreadPool#5
+线程号：119 = thread_link_mode
+线程号：123 = CommonThreadPool#6
+线程号：127 = CommonThreadPool#7
+线程号：129 = CommonThreadPool#8
+线程号：130 = RxCachedThreadScheduler-1
+线程号：131 = RxCachedThreadScheduler-2
+线程号：132 = RxCachedThreadScheduler-3
+线程号：133 = OkHttp Dispatcher
+线程号：134 = OkHttp Dispatcher
+线程号：135 = battery validating thread
+线程号：136 = OkHttp Dispatcher
+线程号：137 = CommonThreadPool#9
+线程号：146 = OkHttp Dispatcher
+线程号：147 = OkHttp Dispatcher
+线程号：152 = OkHttp Dispatcher
+线程号：153 = OkHttp Dispatcher
+线程号：155 = geo-sync-file
+线程号：154 = OkHttp Dispatcher
+线程号：156 = OkHttp ConnectionPool
+线程号：157 = Okio Watchdog
+线程号：158 = UrgentThreadPool#3
+线程号：159 = UrgentThreadPool#4
+线程号：160 = UrgentThreadPool#5
+线程号：161 = UrgentThreadPool#6
+线程号：164 = OkHttp ConnectionPool
+线程号：179 = SDKAgentManager
+线程号：180 = pool-3-thread-1
+线程号：181 = OkHttp Dispatcher
+线程号：184 = queued-work-looper
+线程号：188 = OkHttp Dispatcher
+线程号：202 = OkHttp ConnectionPool
+线程号：207 = OkHttp ConnectionPool
+线程号：208 = OkHttp Dispatcher
+线程号：209 = Okio Watchdog
+线程号：212 = RxCachedThreadScheduler-4
+线程号：219 = RxCachedThreadScheduler-1
+线程号：220 = DJI Log #1
+线程号：221 = binder:22354_4
+线程号：222 = recvBufferThread
+线程号：223 = parseVideoFromCamThread
+线程号：224 = parseVideoFromFpvThread
+线程号：225 = async_parser
+线程号：226 = UrgentThreadPool#7
+线程号：227 = UrgentThreadPool#8
+线程号：228 = UrgentThreadPool#9
+线程号：229 = DJI Log #2
+线程号：320 = OkHttp Dispatcher
+线程号：360 = DJI Log #3
+线程号：377 = AreaCodeWorker
+============end of dump ==========
+
