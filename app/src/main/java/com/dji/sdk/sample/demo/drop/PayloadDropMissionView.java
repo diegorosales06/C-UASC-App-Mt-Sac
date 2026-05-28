@@ -266,8 +266,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             appendLog("Virtual Stick mode enabled.");
             missionRunning = true;
             hasDropped = false;
-            payloadDropController.resetDropSystem();
-            payloadDropController.armDrop();
+            payloadDropController.reset();
             appendLog("Payload drop system armed.");
             appendLog(String.format("Flying to drop target: (%.6f, %.6f) @ %.1fm", dropTargetLat, dropTargetLng, dropTargetAlt));
 
@@ -328,7 +327,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             if (closeToDropTarget && highEnoughToDrop) {
                 appendLog(String.format("Drop target reached! Distance: %.2fm", distanceM));
                 sendVelocityCommand(0, 0, 0);
-                payloadDropController.dropPayload();
+                payloadDropController.dropPayload(flightController);
                 hasDropped = true;
                 appendLog("Payload dropped! Initiating RTH.");
                 missionRunning = false;

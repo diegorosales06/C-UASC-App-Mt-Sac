@@ -1,159 +1,103 @@
 package com.dji.sdk.sample.demo.drop;
 
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothSocket;
 import android.util.Log;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.Set;
-import java.util.UUID;
+import dji.common.flightcontroller.flightassistant.FillLightMode;
+import dji.common.util.CommonCallbacks;
+import dji.sdk.flightcontroller.FlightController;
 
+/**
+ * PayloadDropController
+ *
+ * Manages the payload drop state for PayloadDropMissionView.
+ *
+ * Responsibilities:
+ *  - Tracks whether the payload has been dropped via hasDropped()
+ *  - Executes the drop sequence via dropPayload():
+ *      1. Sets the dropped flag to true
+ *      2. Turns on the downward fill light via FlightAssistant.setDownwardFillLightMode()
+ *         using the same logic confirmed working in LEDControlView.java
+ *
+ * Usage in PayloadDropMissionView:
+ *   if (closeToDropTarget && highEnoughToDrop) {
+ *       payloadDropController.dropPayload(flightController);
+ *   }
+ *   if (!payloadDropController.hasDropped()) { ... }
+ */
 public class PayloadDropController {
 
     private static final String TAG = "PayloadDropController";
 
-    // This name must match the ESP32 Bluetooth name
-    private static final String ESP32_DEVICE_NAME = "ESP32_DROP";
+    // Tracks whether the payload has been dropped this mission session
+    private boolean dropped = false;
 
-    // Standard Bluetooth Serial UUID
-    private static final UUID SPP_UUID =
-            UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
+    // ---------------------------------------------------------------------------------
+    // Public API
+    // ---------------------------------------------------------------------------------
 
-    private boolean armed = false;
-    private boolean alreadyDropped = false;
-
-    private BluetoothAdapter bluetoothAdapter;
-    private BluetoothSocket bluetoothSocket;
-    private OutputStream outputStream;
-
-    public PayloadDropController() {
-        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-    }
-
-    public void armDrop() {
-        armed = true;
-    }
-
-    public void dropPayload() {
-        if (!armed) {
-            Log.d(TAG, "Drop ignored: system is not armed.");
-            return;
-        }
-
-        if (alreadyDropped) {
-            Log.d(TAG, "Drop ignored: payload already dropped.");
-            return;
-        }
-
-        boolean sent = sendDropCommand();
-
-        if (sent) {
-            alreadyDropped = true;
-            Log.d(TAG, "Drop command sent to ESP32.");
-        } else {
-            Log.e(TAG, "Drop command failed.");
-        }
-    }
-
-    private boolean sendDropCommand() {
-        try {
-            if (!connectToESP32()) {
-                return false;
-            }
-
-            outputStream.write("DROP\n".getBytes());
-            outputStream.flush();
-            return true;
-
-        } catch (IOException e) {
-            Log.e(TAG, "Error sending DROP command: " + e.getMessage());
-            closeConnection();
-            return false;
-        }
-    }
-
-    private boolean connectToESP32() {
-        if (bluetoothAdapter == null) {
-            Log.e(TAG, "Bluetooth not supported on this device.");
-            return false;
-        }
-
-        if (!bluetoothAdapter.isEnabled()) {
-            Log.e(TAG, "Bluetooth is not enabled.");
-            return false;
-        }
-
-        if (bluetoothSocket != null && bluetoothSocket.isConnected() && outputStream != null) {
-            return true;
-        }
-
-        BluetoothDevice esp32Device = findPairedESP32();
-
-        if (esp32Device == null) {
-            Log.e(TAG, "ESP32 device not paired. Pair with ESP32_DROP first.");
-            return false;
-        }
-
-        try {
-            bluetoothSocket = esp32Device.createRfcommSocketToServiceRecord(SPP_UUID);
-            bluetoothSocket.connect();
-            outputStream = bluetoothSocket.getOutputStream();
-
-            Log.d(TAG, "Connected to ESP32.");
-            return true;
-
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to connect to ESP32: " + e.getMessage());
-            closeConnection();
-            return false;
-        }
-    }
-
-    private BluetoothDevice findPairedESP32() {
-        Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
-
-        if (pairedDevices == null) {
-            return null;
-        }
-
-        for (BluetoothDevice device : pairedDevices) {
-            if (ESP32_DEVICE_NAME.equals(device.getName())) {
-                return device;
-            }
-        }
-
-        return null;
-    }
-
-    public void resetDropSystem() {
-        armed = false;
-        alreadyDropped = false;
-    }
-
-    public boolean isArmed() {
-        return armed;
-    }
-
+    /**
+     * Returns true if the payload has already been dropped this session.
+     * Used in the control loop to prevent triggering the drop more than once.
+     *
+     * @return true if dropPayload() has already been called successfully
+     */
     public boolean hasDropped() {
-        return alreadyDropped;
+        return dropped;
     }
 
-    public void closeConnection() {
-        try {
-            if (outputStream != null) {
-                outputStream.close();
-            }
-        } catch (IOException ignored) {}
+    /**
+     * Executes the payload drop sequence:
+     *  1. Sets dropped = true immediately so the control loop stops checking
+     *  2. Turns on the downward fill light via FlightAssistant using the same
+     *     FillLightMode.ON approach confirmed working in LEDControlView.java
+     *
+     * The FlightController is passed in from PayloadDropMissionView rather than
+     * stored in this class — keeps this class stateless with respect to DJI objects
+     * and avoids holding a stale reference after the view is destroyed.
+     *
+     * @param flightController the active FlightController from PayloadDropMissionView
+     */
+    public void dropPayload(FlightController flightController) {
+        // Mark as dropped immediately — prevents double-drop if control loop
+        // ticks again before the async LED callback returns
+        dropped = true;
 
-        try {
-            if (bluetoothSocket != null) {
-                bluetoothSocket.close();
-            }
-        } catch (IOException ignored) {}
+        Log.d(TAG, "dropPayload() called — payload released.");
 
-        outputStream = null;
-        bluetoothSocket = null;
+        if (flightController == null) {
+            Log.e(TAG, "FlightController is null — cannot turn on fill light.");
+            return;
+        }
+
+        // Get FlightAssistant from FlightController — same pattern as LEDControlView
+        dji.sdk.flightcontroller.FlightAssistant flightAssistant =
+                flightController.getFlightAssistant();
+
+        if (flightAssistant == null) {
+            Log.e(TAG, "FlightAssistant unavailable — fill light not turned on.");
+            return;
+        }
+
+        // Turn on the downward fill light — same call confirmed working in LEDControlView
+        flightAssistant.setDownwardFillLightMode(FillLightMode.ON,
+                new CommonCallbacks.CompletionCallback() {
+                    @Override
+                    public void onResult(dji.common.error.DJIError error) {
+                        if (error == null) {
+                            Log.d(TAG, "Downward fill light turned ON at drop.");
+                        } else {
+                            Log.e(TAG, "Fill light failed: " + error.getDescription());
+                        }
+                    }
+                });
+    }
+
+    /**
+     * Resets the drop state — call this when starting a new mission session
+     * so hasDropped() returns false again and the drop can be triggered once more.
+     */
+    public void reset() {
+        dropped = false;
+        Log.d(TAG, "PayloadDropController reset.");
     }
 }
