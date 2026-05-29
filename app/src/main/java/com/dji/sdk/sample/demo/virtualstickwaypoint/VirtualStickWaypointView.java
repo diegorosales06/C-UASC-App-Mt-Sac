@@ -99,12 +99,12 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     // Kp: proportional gain — how hard the P term reacts to position error
     // during the braking phase. Start at 0.4, increase if drone stops short,
     // decrease if it oscillates around the waypoint.
-    private float Kp_HORIZONTAL = 0.5f;
+    private float Kp_HORIZONTAL = 0.4f;
 
     // Kd: derivative gain — braking force proportional to how fast distance
     // is shrinking. Higher = harder braking at high speed = less overshoot.
     // Start at 0.3, increase if drone overshoots, decrease if it brakes too early.
-    private float Kd_HORIZONTAL = 0.35f;
+    private float Kd_HORIZONTAL = 0.3f;
 
     // Kp vertical — unchanged from before
     private float Kp_VERTICAL = 0.6f;
@@ -169,6 +169,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     private TextView   tvStatus;
     private TextView   tvCurrentWaypoint;
     private TextView   tvDronePos;
+    private TextView   tvDroneSpeed;     // live ground speed display
     private TextView   tvWaypointList;
     private EditText   etLat;
     private EditText   etLng;
@@ -236,8 +237,15 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         tvDronePos = new TextView(context);
         tvDronePos.setText("Drone: unknown");
         tvDronePos.setTextSize(13f);
-        tvDronePos.setPadding(0, 0, 0, 14);
+        tvDronePos.setPadding(0, 0, 0, 4);
         addView(tvDronePos);
+
+        // Live ground speed — computed from velocity components in state callback
+        tvDroneSpeed = new TextView(context);
+        tvDroneSpeed.setText("Speed: — m/s");
+        tvDroneSpeed.setTextSize(13f);
+        tvDroneSpeed.setPadding(0, 0, 0, 14);
+        addView(tvDroneSpeed);
 
         // Lat / Lng / Alt input row
         LinearLayout inputRow = new LinearLayout(context);
@@ -517,9 +525,26 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         currentAlt = alt;
         hasValidGPS = true;
 
-        // Update position display on UI thread
-        post(() -> tvDronePos.setText(String.format(
-                "Drone: (%.6f, %.6f)  alt: %.1fm", lat, lng, alt)));
+        // Compute ground speed from velocity components.
+        // getVelocityX = North velocity (m/s)
+        // getVelocityY = East velocity (m/s)
+        // getVelocityZ = vertical velocity (m/s, positive = down in NED)
+        // Ground speed = magnitude of horizontal velocity vector only
+        float vx = state.getVelocityX(); // North
+        float vy = state.getVelocityY(); // East
+        float groundSpeed = (float) Math.sqrt(vx * vx + vy * vy);
+
+        // Log speed when mission is running so Logcat captures it per tick
+        if (missionRunning) {
+            Log.d(TAG, String.format("speed=%.2f m/s  vx=%.2f  vy=%.2f", groundSpeed, vx, vy));
+        }
+
+        // Update UI on main thread
+        post(() -> {
+            tvDronePos.setText(String.format(
+                    "Drone: (%.6f, %.6f)  alt: %.1fm", lat, lng, alt));
+            tvDroneSpeed.setText(String.format("Speed: %.2f m/s", groundSpeed));
+        });
     }
 
     // ---------------------------------------------------------------------------------
