@@ -317,9 +317,14 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         addView(tvWaypointList);
 
         // add default waypoints only after tvWaypointList exists
-        waypointList.add(new double[]{34.027154, -117.851337, 8});
-        waypointList.add(new double[]{34.027254, -117.851136,  8});
-        waypointList.add(new double[]{34.027455, -117.851226, 8});
+        // lat, log, altitude(m)
+        waypointList.add(new double[]{34.048510, -117.837831, 3});
+        waypointList.add(new double[]{34.048414, -117.837468,  3});
+        waypointList.add(new double[]{34.048140, -117.837227, 3});
+        waypointList.add(new double[]{34.048121, -117.837787, 3});
+        waypointList.add(new double[]{34.047934, -117.837956, 3});
+        waypointList.add(new double[]{34.047717, -117.837637, 3});
+        waypointList.add(new double[]{34.047729, -117.837246, 3});
         refreshWaypointList();
 
         // Start / Stop buttons
