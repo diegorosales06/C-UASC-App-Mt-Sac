@@ -85,51 +85,55 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     // Control loop timing
     // ---------------------------------------------------------------------------------
 
-    // How often the control loop runs (ms). 20Hz = 50ms interval.
-    // DJI requires Virtual Stick commands at minimum every 200ms or the drone
-    // will exit virtual stick mode — 50ms gives us plenty of margin.
     private static final long CONTROL_LOOP_INTERVAL_MS = 50;
-
-    // ---------------------------------------------------------------------------------
-    // Acceptance criteria
-    // ---------------------------------------------------------------------------------
-
-    // Horizontal distance (meters) within which a waypoint is considered "reached"
-    private static final double ACCEPTANCE_RADIUS_M = 2.0;
-
-    // Altitude error (meters) within which altitude is considered "reached"
+    private static final double ACCEPTANCE_RADIUS_M = 5.0; // updated to match your 5m target
     private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
-
-    // ---------------------------------------------------------------------------------
-    // Proportional controller gains (Kp)
-    // These scale how aggressively the drone responds to position error.
-    // Increase to fly faster, decrease if the drone overshoots.
-    // ---------------------------------------------------------------------------------
-
-    // Horizontal: maps distance (meters) → speed (m/s)
-    // Example: 10m away → 10 * 0.4 = 4 m/s
-    private static final float Kp_HORIZONTAL = 0.4f;
-
-    // Vertical: maps altitude error (meters) → climb/descend speed (m/s)
-    private static final float Kp_VERTICAL = 0.6f;
-
-    // ---------------------------------------------------------------------------------
-    // Speed limits — clamp output of proportional controller to safe values
-    // ---------------------------------------------------------------------------------
-
-    // Max horizontal cruise speed in m/s (Mavic Air 2 max is ~19 m/s, keep conservative)
-    private static final float MAX_HORIZONTAL_SPEED = 5.0f;
-
-    // Min speed so the drone doesn't stall when very close to waypoint
-    private static final float MIN_HORIZONTAL_SPEED = 0.3f;
-
-    // Max climb/descend speed in m/s
-    private static final float MAX_VERTICAL_SPEED = 2.0f;
-
-    // ---------------------------------------------------------------------------------
-    // Earth radius constant for Haversine distance calculation
-    // ---------------------------------------------------------------------------------
     private static final double EARTH_RADIUS_M = 6_371_000.0;
+    private static final float  MIN_HORIZONTAL_SPEED = 0.3f;
+    private static final float  MAX_VERTICAL_SPEED   = 2.0f;
+
+    // ---------------------------------------------------------------------------------
+    // Tunable control parameters — adjustable in-app via +/- buttons
+    // ---------------------------------------------------------------------------------
+
+    // Kp: proportional gain — how hard the P term reacts to position error
+    // during the braking phase. Start at 0.4, increase if drone stops short,
+    // decrease if it oscillates around the waypoint.
+    private float Kp_HORIZONTAL = 0.5f;
+
+    // Kd: derivative gain — braking force proportional to how fast distance
+    // is shrinking. Higher = harder braking at high speed = less overshoot.
+    // Start at 0.3, increase if drone overshoots, decrease if it brakes too early.
+    private float Kd_HORIZONTAL = 0.35f;
+
+    // Kp vertical — unchanged from before
+    private float Kp_VERTICAL = 0.6f;
+
+    // Max cruise speed — drone flies at this speed during the feedforward phase
+    // (when far from waypoint). Mavic Air 2 hardware max ~19 m/s; keep below 12
+    // until you've verified behavior in the field.
+    private float MAX_HORIZONTAL_SPEED = 8.0f;
+
+    // Deceleration rate used to compute braking distance (m/s²).
+    // brakingDistance = maxSpeed² / (2 * deceleration)
+    // At 8 m/s and 2.0 m/s² → 16m braking distance.
+    // Increase to start braking earlier (safer), decrease for more aggressive approach.
+    private float DECELERATION = 2.0f;
+
+    // ---------------------------------------------------------------------------------
+    // PD controller state — previousDistance needed to compute the D term
+    // ---------------------------------------------------------------------------------
+    private double previousDistance = 0.0;
+    // dt in seconds — matches CONTROL_LOOP_INTERVAL_MS
+    private static final float DT = CONTROL_LOOP_INTERVAL_MS / 1000.0f;
+
+    // ---------------------------------------------------------------------------------
+    // Tuning UI labels — updated whenever a parameter changes
+    // ---------------------------------------------------------------------------------
+    private TextView tvKp;
+    private TextView tvKd;
+    private TextView tvSpeed;
+    private TextView tvBraking;
 
     // ---------------------------------------------------------------------------------
     // Waypoint storage
@@ -305,9 +309,9 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         addView(tvWaypointList);
 
         // add default waypoints only after tvWaypointList exists
-        waypointList.add(new double[]{34.04625892060497, -117.84532693990677, 8});
-        waypointList.add(new double[]{34.04642926281088, -117.8454831769448,  8});
-        waypointList.add(new double[]{34.04628913461136, -117.84535578331251, 8});
+        waypointList.add(new double[]{34.027154, -117.851337, 8});
+        waypointList.add(new double[]{34.027254, -117.851136,  8});
+        waypointList.add(new double[]{34.027455, -117.851226, 8});
         refreshWaypointList();
 
         // Start / Stop buttons
@@ -335,6 +339,46 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
 
         addView(btnRow2);
 
+        // ---- Tuning panel ----
+        // All parameters adjustable in-app without redeploying.
+        // Changes take effect immediately on the next control loop tick.
+
+        TextView tuningHeader = new TextView(context);
+        tuningHeader.setText("── Tuning ──────────────────");
+        tuningHeader.setTextSize(12f);
+        tuningHeader.setPadding(0, 8, 0, 4);
+        addView(tuningHeader);
+
+        // Kp row
+        tvKp = new TextView(context);
+        tvKp.setTextSize(12f);
+        addView(buildTuningRow(context, "Kp (P gain)", tvKp,
+                () -> { Kp_HORIZONTAL = Math.max(0.05f, Kp_HORIZONTAL - 0.05f); refreshTuningLabels(); },
+                () -> { Kp_HORIZONTAL = Math.min(2.0f,  Kp_HORIZONTAL + 0.05f); refreshTuningLabels(); }));
+
+        // Kd row
+        tvKd = new TextView(context);
+        tvKd.setTextSize(12f);
+        addView(buildTuningRow(context, "Kd (D gain)", tvKd,
+                () -> { Kd_HORIZONTAL = Math.max(0.0f,  Kd_HORIZONTAL - 0.05f); refreshTuningLabels(); },
+                () -> { Kd_HORIZONTAL = Math.min(2.0f,  Kd_HORIZONTAL + 0.05f); refreshTuningLabels(); }));
+
+        // Max speed row
+        tvSpeed = new TextView(context);
+        tvSpeed.setTextSize(12f);
+        addView(buildTuningRow(context, "Max Speed (m/s)", tvSpeed,
+                () -> { MAX_HORIZONTAL_SPEED = Math.max(1.0f,  MAX_HORIZONTAL_SPEED - 0.5f); refreshTuningLabels(); },
+                () -> { MAX_HORIZONTAL_SPEED = MAX_HORIZONTAL_SPEED + 0.5f; refreshTuningLabels(); }));
+
+        // Deceleration / braking distance row
+        tvBraking = new TextView(context);
+        tvBraking.setTextSize(12f);
+        addView(buildTuningRow(context, "Decel (m/s²)", tvBraking,
+                () -> { DECELERATION = Math.max(0.5f, DECELERATION - 0.25f); refreshTuningLabels(); },
+                () -> { DECELERATION = Math.min(5.0f, DECELERATION + 0.25f); refreshTuningLabels(); }));
+
+        refreshTuningLabels();
+
         // Scrollable log
         tvLog = new TextView(context);
         tvLog.setText("Log:\n");
@@ -347,6 +391,72 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         addView(scrollLog);
 
         initFlightController();
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Tuning UI helpers
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * Builds a single tuning row: [label]  [-]  [value display]  [+]
+     * Tapping - or + fires the corresponding Runnable and refreshes labels.
+     */
+    private LinearLayout buildTuningRow(Context context, String label,
+                                        TextView valueDisplay,
+                                        Runnable onDecrement,
+                                        Runnable onIncrement) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(HORIZONTAL);
+        row.setPadding(0, 2, 0, 2);
+
+        TextView lbl = new TextView(context);
+        lbl.setText(label);
+        lbl.setTextSize(12f);
+        LinearLayout.LayoutParams lblP = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f);
+        lbl.setLayoutParams(lblP);
+        row.addView(lbl);
+
+        Button btnMinus = new Button(context);
+        btnMinus.setText("−");
+        btnMinus.setTextSize(14f);
+        LinearLayout.LayoutParams btnP = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.5f);
+        btnMinus.setLayoutParams(btnP);
+        btnMinus.setOnClickListener(v -> onDecrement.run());
+        row.addView(btnMinus);
+
+        LinearLayout.LayoutParams valP = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f);
+        valueDisplay.setLayoutParams(valP);
+        valueDisplay.setGravity(android.view.Gravity.CENTER);
+        row.addView(valueDisplay);
+
+        Button btnPlus = new Button(context);
+        btnPlus.setText("+");
+        btnPlus.setTextSize(14f);
+        LinearLayout.LayoutParams btnP2 = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.5f);
+        btnPlus.setLayoutParams(btnP2);
+        btnPlus.setOnClickListener(v -> onIncrement.run());
+        row.addView(btnPlus);
+
+        return row;
+    }
+
+    /**
+     * Refreshes all tuning value labels to reflect current parameter values.
+     * Also logs current config so you can see what ran during a flight when
+     * reviewing the Logcat after landing.
+     */
+    private void refreshTuningLabels() {
+        float brakingDist = (MAX_HORIZONTAL_SPEED * MAX_HORIZONTAL_SPEED) / (2 * DECELERATION);
+        if (tvKp     != null) tvKp.setText(String.format("%.2f", Kp_HORIZONTAL));
+        if (tvKd     != null) tvKd.setText(String.format("%.2f", Kd_HORIZONTAL));
+        if (tvSpeed  != null) tvSpeed.setText(String.format("%.1f", MAX_HORIZONTAL_SPEED));
+        if (tvBraking != null) tvBraking.setText(String.format("%.1f (→%.1fm)", DECELERATION, brakingDist));
+        Log.d(TAG, String.format("Tuning: Kp=%.2f Kd=%.2f speed=%.1f decel=%.2f brakeDist=%.1fm",
+                Kp_HORIZONTAL, Kd_HORIZONTAL, MAX_HORIZONTAL_SPEED, DECELERATION, brakingDist));
     }
 
     // ---------------------------------------------------------------------------------
@@ -495,6 +605,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
             }
             appendLog("Virtual Stick mode enabled.");
             currentWaypointIndex = 0;
+            previousDistance = 0.0;
             missionRunning = true;
 
             // Start flight logger — creates a new timestamped CSV file
@@ -593,93 +704,101 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         if (!missionRunning || !hasValidGPS) return;
         if (currentWaypointIndex >= waypointList.size()) return;
 
-        // Pull the current target waypoint
-        double[] target    = waypointList.get(currentWaypointIndex);
-        double targetLat   = target[0];
-        double targetLng   = target[1];
-        float  targetAlt   = (float) target[2];
+        double[] target  = waypointList.get(currentWaypointIndex);
+        double targetLat = target[0];
+        double targetLng = target[1];
+        float  targetAlt = (float) target[2];
 
-        // --- Compute horizontal distance to target (Haversine formula) ---
-        // Haversine gives great-circle distance between two GPS points in meters.
-        // This is more accurate than simple Euclidean distance for GPS coords.
         double distanceM = haversineDistance(currentLat, currentLng, targetLat, targetLng);
+        float  altError  = targetAlt - currentAlt;
 
-        // --- Compute altitude error ---
-        float altError = targetAlt - currentAlt;
-
-        // Log every tick to Logcat for debugging
         Log.d(TAG, String.format("WP%d dist=%.2fm altErr=%.2fm lat=%.6f lng=%.6f",
                 currentWaypointIndex + 1, distanceM, altError, currentLat, currentLng));
 
-        // Write to CSV file
-        if (flightLogger != null) {
-            flightLogger.log(currentLat, currentLng, true);
-        }
+        if (flightLogger != null) flightLogger.log(currentLat, currentLng, true);
 
-        // --- Check if waypoint is reached ---
-        // Both horizontal AND vertical acceptance must be met before advancing
+        // --- Waypoint acceptance ---
         boolean horizontalReached = distanceM <= ACCEPTANCE_RADIUS_M;
         boolean verticalReached   = Math.abs(altError) <= ALTITUDE_ACCEPTANCE_M;
 
         if (horizontalReached && verticalReached) {
             appendLog(String.format("Waypoint %d reached! (dist=%.2fm altErr=%.2fm)",
                     currentWaypointIndex + 1, distanceM, altError));
-
+            previousDistance = 0.0; // reset D term state for next waypoint
             currentWaypointIndex++;
 
             if (currentWaypointIndex >= waypointList.size()) {
-                // All waypoints completed — initiate RTH
                 appendLog("All waypoints complete. Initiating RTH.");
                 missionRunning = false;
                 stopControlLoop();
-                sendVelocityCommand(0, 0, 0); // stop movement first
-
-                // Stop the logger before handing off to RTH
+                sendVelocityCommand(0, 0, 0);
                 if (flightLogger != null) {
                     flightLogger.stop();
                     appendLog("Log saved to: " + flightLogger.getLogFilePath());
                 }
-
                 triggerRTH();
                 return;
             }
 
-            // Advance to next waypoint
             final int nextIdx = currentWaypointIndex;
-            post(() -> {
-                appendLog("Flying to waypoint " + (nextIdx + 1) + ".");
-                updateTargetLabel();
-            });
+            post(() -> { appendLog("Flying to waypoint " + (nextIdx + 1) + "."); updateTargetLabel(); });
             return;
         }
 
-        // --- Compute velocity commands ---
+        // -------------------------------------------------------------------------
+        // Feedforward + PD horizontal speed controller
+        //
+        // Two phases based on distance to waypoint:
+        //
+        // PHASE 1 — CRUISE (distance > brakingDistance):
+        //   Fly at MAX_HORIZONTAL_SPEED regardless of how far away the waypoint is.
+        //   Pure feedforward — the P and D terms do nothing here.
+        //   This is what gives you maximum speed on long transits.
+        //
+        // PHASE 2 — BRAKING (distance <= brakingDistance):
+        //   PD controller takes over.
+        //   P term: proportional to remaining distance — slows as drone approaches.
+        //   D term: proportional to rate of closure — brakes harder when closing fast.
+        //           distanceRate is negative when closing (distance shrinking),
+        //           so -Kd * distanceRate adds a positive (braking) contribution.
+        //   Together they produce a smooth deceleration that arrives at ~5m accuracy.
+        //
+        // brakingDistance = v² / (2*a) — standard physics stopping distance formula.
+        // -------------------------------------------------------------------------
 
-        // Proportional horizontal speed: faster when far, slower when close
-// Proportional horizontal speed: faster when far, slower when close
-        float horizontalSpeed = (float)(Kp_HORIZONTAL * distanceM);
-        horizontalSpeed = Math.max(MIN_HORIZONTAL_SPEED,
-                Math.min(MAX_HORIZONTAL_SPEED, horizontalSpeed));
+        float brakingDistance = (MAX_HORIZONTAL_SPEED * MAX_HORIZONTAL_SPEED) / (2 * DECELERATION);
 
-// Bearing from current position to target (radians, clockwise from North)
-        double bearingRad = bearing(currentLat, currentLng, targetLat, targetLng);
+        float horizontalSpeed;
+        if (distanceM > brakingDistance) {
+            // PHASE 1: full cruise speed
+            horizontalSpeed = MAX_HORIZONTAL_SPEED;
+        } else {
+            // PHASE 2: PD braking
+            // D term — rate of change of distance (negative = closing in)
+            double distanceRate = (distanceM - previousDistance) / DT;
 
-// Resolve desired ground velocity into North/East components
+            // P term reacts to current error, D term brakes against fast closure
+            horizontalSpeed = (float)(Kp_HORIZONTAL * distanceM - Kd_HORIZONTAL * distanceRate);
+            horizontalSpeed = Math.max(MIN_HORIZONTAL_SPEED,
+                    Math.min(MAX_HORIZONTAL_SPEED, horizontalSpeed));
+        }
+
+        // Store distance for D term on next tick
+        previousDistance = distanceM;
+
+        // --- Bearing and velocity decomposition ---
+        double bearingRad   = bearing(currentLat, currentLng, targetLat, targetLng);
         float northVelocity = (float)(horizontalSpeed * Math.cos(bearingRad));
         float eastVelocity  = (float)(horizontalSpeed * Math.sin(bearingRad));
 
-// DJI GROUND + VELOCITY mapping:
-//   pitch = east/west
-//   roll  = north/south
+        // DJI GROUND + VELOCITY: pitch = east/west, roll = north/south
         float pitchVelocity = eastVelocity;
         float rollVelocity  = northVelocity;
 
-// Proportional vertical speed: climb/descend based on altitude error
+        // Proportional vertical
         float verticalVelocity = Kp_VERTICAL * altError;
-        verticalVelocity = Math.max(-MAX_VERTICAL_SPEED,
-                Math.min(MAX_VERTICAL_SPEED, verticalVelocity));
+        verticalVelocity = Math.max(-MAX_VERTICAL_SPEED, Math.min(MAX_VERTICAL_SPEED, verticalVelocity));
 
-// Send the computed velocities to the drone
         sendVelocityCommand(pitchVelocity, rollVelocity, verticalVelocity);
     }
 
