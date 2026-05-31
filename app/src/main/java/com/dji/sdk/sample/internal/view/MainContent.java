@@ -25,6 +25,7 @@ import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import com.dji.sdk.sample.BuildConfig;
 import com.dji.sdk.sample.R;
 import com.dji.sdk.sample.demo.bluetooth.BluetoothView;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
@@ -387,14 +388,30 @@ public class MainContent extends RelativeLayout {
                 if (aircraft.getRemoteController() != null && aircraft.getRemoteController().isConnected()) {
                     mTextConnectionStatus.setText(R.string.connection_only_rc);
                     mTextProduct.setText(R.string.product_information);
-                    mBtnOpen.setEnabled(false);
+                    mBtnOpen.setEnabled(BuildConfig.DEBUG);
+                    mTextModelAvailable.setText("Firmware version:N/A");
+                } else {
+                    mBtnOpen.setEnabled(BuildConfig.DEBUG);
+                    mTextProduct.setText(R.string.product_information);
+                    mTextConnectionStatus.setText(BuildConfig.DEBUG
+                            ? "Status: Product Disconnected (UI test mode)"
+                            : getResources().getString(R.string.connection_loose));
                     mTextModelAvailable.setText("Firmware version:N/A");
                 }
+            } else {
+                mBtnOpen.setEnabled(BuildConfig.DEBUG);
+                mTextProduct.setText(R.string.product_information);
+                mTextConnectionStatus.setText(BuildConfig.DEBUG
+                        ? "Status: Product Disconnected (UI test mode)"
+                        : getResources().getString(R.string.connection_loose));
+                mTextModelAvailable.setText("Firmware version:N/A");
             }
         } else {
-            mBtnOpen.setEnabled(false);
+            mBtnOpen.setEnabled(BuildConfig.DEBUG);
             mTextProduct.setText(R.string.product_information);
-            mTextConnectionStatus.setText(R.string.connection_loose);
+            mTextConnectionStatus.setText(BuildConfig.DEBUG
+                    ? "Status: No Product Connected (UI test mode)"
+                    : getResources().getString(R.string.connection_loose));
             mTextModelAvailable.setText("Firmware version:N/A");
         }
     }

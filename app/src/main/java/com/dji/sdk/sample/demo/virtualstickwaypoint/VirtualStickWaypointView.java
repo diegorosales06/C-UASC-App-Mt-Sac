@@ -16,6 +16,7 @@ import androidx.annotation.NonNull;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.view.PresentableView;
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
+import com.dji.sdk.sample.demo.map.MissionMapDataStore;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -316,10 +317,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         tvWaypointList.setPadding(0, 0, 0, 12);
         addView(tvWaypointList);
 
-        // add default waypoints only after tvWaypointList exists
-        waypointList.add(new double[]{34.027154, -117.851337, 8});
-        waypointList.add(new double[]{34.027254, -117.851136,  8});
-        waypointList.add(new double[]{34.027455, -117.851226, 8});
+        waypointList.addAll(MissionMapDataStore.loadVirtualStickWaypoints(context));
         refreshWaypointList();
 
         // Start / Stop buttons
@@ -578,6 +576,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         }
 
         waypointList.add(new double[]{lat, lng, alt});
+        MissionMapDataStore.saveVirtualStickWaypoints(getContext(), waypointList);
         etLat.setText("");
         etLng.setText("");
         refreshWaypointList();
@@ -591,6 +590,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
             return;
         }
         waypointList.clear();
+        MissionMapDataStore.saveVirtualStickWaypoints(getContext(), waypointList);
         refreshWaypointList();
         appendLog("Waypoints cleared.");
     }
