@@ -258,6 +258,10 @@ public class MainContent extends RelativeLayout {
                 DJISDKManager.getInstance().getRegistrationSDKVersion()
                         + " Debug:"
                         + GlobalConfig.DEBUG));
+        // Immediately apply offline debug state so Open is enabled on first load
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            refreshSDKRelativeUI();
+        }
     }
 
     private void handleBridgeIPTextChange() {
