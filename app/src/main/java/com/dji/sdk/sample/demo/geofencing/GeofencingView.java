@@ -44,6 +44,8 @@ import dji.sdk.products.Aircraft;
  *     being destroyed when the user navigates to another menu and comes back.
  *  3. onDetachedFromWindow() no longer kills the callback if the fence is active,
  *     so enforcement continues even while the user is on a different screen.
+ *
+ * NEW: CSV import — paste multiple lat,lng lines at once to bulk-load waypoints.
  */
 public class GeofencingView extends LinearLayout implements PresentableView {
 
@@ -65,10 +67,10 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // Default hardcoded fence vertices (Mt. SAC area)
     // These are pre-loaded on first launch; user can add/clear from here
     private static final double[][] DEFAULT_VERTICES = {
-    {  34.04618635227991, -117.84552701364355 },
-    {  34.04632498120861, -117.84524530311664 },
-    {  34.04658300697332, -117.84539805413424 },
-            {   34.04646801720643, -117.84579969397946   }
+        {  34.04618635227991, -117.84552701364355 },
+        {  34.04632498120861, -117.84524530311664 },
+        {  34.04658300697332, -117.84539805413424 },
+        {  34.04646801720643, -117.84579969397946 }
     };
 
     // ---------------------------------------------------------------------------------
@@ -79,8 +81,10 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     private TextView   tvWaypointList;
     private EditText   etLat;
     private EditText   etLng;
+    private EditText   etCsvImport;
     private Button     btnAddWaypoint;
     private Button     btnClearWaypoints;
+    private Button     btnImportCsv;
     private Button     btnStartFence;
     private Button     btnStopFence;
     private ScrollView scrollLog;
@@ -171,6 +175,27 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         inputRow.addView(etLng);
 
         addView(inputRow);
+
+        // --- CSV Import ---
+        TextView tvCsvLabel = new TextView(context);
+        tvCsvLabel.setText("Bulk import (paste lat,lng lines from CSV):");
+        tvCsvLabel.setTextSize(12f);
+        tvCsvLabel.setPadding(0, 12, 0, 4);
+        addView(tvCsvLabel);
+
+        etCsvImport = new EditText(context);
+        etCsvImport.setHint("e.g.\n34.046186, -117.845527\n34.046324, -117.845245");
+        etCsvImport.setMinLines(3);
+        etCsvImport.setMaxLines(6);
+        etCsvImport.setGravity(android.view.Gravity.TOP);
+        etCsvImport.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        addView(etCsvImport);
+
+        btnImportCsv = new Button(context);
+        btnImportCsv.setText("Import CSV Points");
+        btnImportCsv.setOnClickListener(v -> onImportCsv());
+        addView(btnImportCsv);
 
         // --- Add / Clear buttons ---
         LinearLayout btnRow1 = new LinearLayout(context);
@@ -309,6 +334,41 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         appendLog(String.format("Added waypoint %d: (%.6f, %.6f)", fenceVertices.size(), lat, lng));
     }
 
+    private void onImportCsv() {
+        String raw = etCsvImport.getText().toString().trim();
+        if (raw.isEmpty()) {
+            showToast("Paste some CSV points first.");
+            return;
+        }
+
+        int added = 0;
+        for (String line : raw.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            // Skip header row if present
+            if (line.toLowerCase().contains("lat")) continue;
+            String[] parts = line.split(",");
+            if (parts.length < 2) continue;
+            try {
+                double lat = Double.parseDouble(parts[0].trim());
+                double lng = Double.parseDouble(parts[1].trim());
+                if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                    fenceVertices.add(new double[]{lat, lng});
+                    added++;
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+
+        if (added > 0) {
+            saveWaypointsToPrefs(getContext());
+            refreshWaypointList();
+            etCsvImport.setText("");
+            appendLog("Imported " + added + " waypoints from CSV.");
+        } else {
+            showToast("No valid points found. Format: lat,lng per line.");
+        }
+    }
+
     private void onClearWaypoints() {
         if (fenceActive) {
             showToast("Stop the fence before clearing waypoints.");
@@ -371,11 +431,6 @@ public class GeofencingView extends LinearLayout implements PresentableView {
 
             // Ignore readings with no GPS fix (DJI SDK returns 0,0 when no fix)
             if (droneLat == 0.0 && droneLng == 0.0) return;
-
-            // Always update the position display
-//            post(() -> tvDronePos.setText(
-//                    String.format("Drone: (%.6f, %.6f)  alt: %.1fm",
-//                            droneLat, droneLng, location.getAltitude())));
 
             // Only enforce the boundary if the fence is currently active
             if (!fenceActive) return;
@@ -443,19 +498,12 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // SharedPreferences persistence — survives full app restarts
     // ---------------------------------------------------------------------------------
 
-    /**
-     * Serialises fenceVertices into SharedPreferences.
-     * Called every time a waypoint is added or the list is cleared.
-     * Each waypoint is stored as two separate double entries keyed by index:
-     *   waypoint_lat_0, waypoint_lng_0, waypoint_lat_1, waypoint_lng_1, ...
-     */
     private void saveWaypointsToPrefs(Context context) {
         SharedPreferences.Editor editor = context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit();
         editor.putInt(PREFS_KEY_COUNT, fenceVertices.size());
         for (int i = 0; i < fenceVertices.size(); i++) {
-            // Store double as raw long bits to preserve full precision
             editor.putLong(PREFS_KEY_LAT + i,
                     Double.doubleToRawLongBits(fenceVertices.get(i)[0]));
             editor.putLong(PREFS_KEY_LNG + i,
@@ -465,11 +513,6 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         Log.d(TAG, "Saved " + fenceVertices.size() + " waypoints to SharedPreferences.");
     }
 
-    /**
-     * Restores fenceVertices from SharedPreferences.
-     * Called once per app session the first time GeofencingView is created.
-     * If no waypoints were previously saved, fenceVertices stays empty.
-     */
     private void loadWaypointsFromPrefs(Context context) {
         SharedPreferences prefs = context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -478,7 +521,6 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         fenceVertices.clear();
 
         if (count <= 0) {
-            // No saved waypoints — load the hardcoded defaults
             for (double[] vertex : DEFAULT_VERTICES) {
                 fenceVertices.add(new double[]{vertex[0], vertex[1]});
             }
@@ -497,11 +539,6 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // Geometry: Ray-Casting Point-in-Polygon
     // ---------------------------------------------------------------------------------
 
-    /**
-     * Returns true if (lat, lng) is inside the polygon defined by the vertex list.
-     * Uses the standard ray-casting algorithm. Works for any simple
-     * (non-self-intersecting) polygon regardless of winding order (CW or CCW).
-     */
     static boolean isPointInPolygon(double lat, double lng, List<double[]> polygon) {
         int n = polygon.size();
         if (n < 3) return false;
@@ -510,10 +547,10 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         int j = n - 1;
 
         for (int i = 0; i < n; i++) {
-            double xi = polygon.get(i)[0]; // lat of vertex i
-            double yi = polygon.get(i)[1]; // lng of vertex i
-            double xj = polygon.get(j)[0]; // lat of previous vertex
-            double yj = polygon.get(j)[1]; // lng of previous vertex
+            double xi = polygon.get(i)[0];
+            double yi = polygon.get(i)[1];
+            double xj = polygon.get(j)[0];
+            double yj = polygon.get(j)[1];
 
             boolean intersect = ((yi > lng) != (yj > lng))
                     && (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
@@ -528,13 +565,13 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // UI helpers
     // ---------------------------------------------------------------------------------
 
-    /** Syncs button states and status label to the current value of fenceActive. */
     private void syncButtonState() {
         boolean active = fenceActive;
         if (btnStartFence     != null) btnStartFence.setEnabled(!active);
         if (btnStopFence      != null) btnStopFence.setEnabled(active);
         if (btnAddWaypoint    != null) btnAddWaypoint.setEnabled(!active);
         if (btnClearWaypoints != null) btnClearWaypoints.setEnabled(!active);
+        if (btnImportCsv      != null) btnImportCsv.setEnabled(!active);
         if (tvStatus != null) {
             tvStatus.setText(active
                     ? "Fence: ACTIVE  (" + fenceVertices.size() + " vertices)"
@@ -573,9 +610,6 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        // If the fence is still active, leave the callback registered so enforcement
-        // continues while the user is on a different screen.
-        // Only clean up if the fence is not running.
         if (!fenceActive) {
             detachStateCallback();
         }
