@@ -2,14 +2,20 @@
 """
 Create a WAYPOINTS QR code for the VS Waypoint Mission tablet importer.
 
+
+
 Setup:
+    make sure to create a venv. Run whats below. You only need to do this once per environment.
+
+    python3 -m venv venv
+    source venv/bin/activate
     python3 -m pip install -r scripts/requirements-qr.txt
 
 Run after editing WAYPOINTS below:
     python3 scripts/create_waypoint_qr.py --output waypoints_qr.png
 
 Optional CSV input:
-    python3 scripts/create_waypoint_qr.py --input my_waypoints.csv --output waypoints_qr.png
+    python3 scripts/create_waypoint_qr.py --input scripts/my_waypoints.csv --output waypoints_qr.png
 
 CSV rows can be:
     name,latitude,longitude,altitude_m
