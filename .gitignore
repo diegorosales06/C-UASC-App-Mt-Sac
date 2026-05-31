@@ -69,3 +69,7 @@ Thumbs.db
 
 # Import summary file
 import-summary.txt
+
+# QR code generator outputs
+/waypoints_qr*.png
+/scripts/waypoints_qr*.png
