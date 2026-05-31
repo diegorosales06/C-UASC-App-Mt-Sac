@@ -32,6 +32,7 @@ import com.dji.sdk.sample.internal.controller.MainActivity;
 import com.dji.sdk.sample.internal.model.ViewWrapper;
 import com.dji.sdk.sample.internal.utils.DialogUtils;
 import com.dji.sdk.sample.internal.utils.GeneralUtils;
+import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 import com.squareup.otto.Subscribe;
 
@@ -365,6 +366,14 @@ public class MainContent extends RelativeLayout {
     }
 
     private void refreshSDKRelativeUI() {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            mBtnOpen.setEnabled(true);
+            mTextConnectionStatus.setText("Status: Offline Debug Mode");
+            mTextProduct.setText("No drone/controller required");
+            mTextModelAvailable.setText("Firmware version:N/A");
+            return;
+        }
+
         mProduct = DJISampleApplication.getProductInstance();
         Log.d(TAG, "mProduct: " + (mProduct == null ? "null" : "unnull"));
         if (null != mProduct) {

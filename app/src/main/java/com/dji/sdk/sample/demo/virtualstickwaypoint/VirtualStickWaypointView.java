@@ -1,9 +1,12 @@
 package com.dji.sdk.sample.demo.virtualstickwaypoint;
 
 import android.content.Context;
+import android.content.Intent;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
+import android.app.Activity;
+import android.app.AlertDialog;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -16,11 +19,16 @@ import androidx.annotation.NonNull;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.view.PresentableView;
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
+import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import dji.common.error.DJIError;
 import dji.common.flightcontroller.FlightControllerState;
@@ -91,6 +99,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     private static final double EARTH_RADIUS_M = 6_371_000.0;
     private static final float  MIN_HORIZONTAL_SPEED = 0.3f;
     private static final float  MAX_VERTICAL_SPEED   = 2.0f;
+    private static final double OFFLINE_START_OFFSET_M = 20.0;
 
     // ---------------------------------------------------------------------------------
     // Tunable control parameters — adjustable in-app via +/- buttons
@@ -175,6 +184,8 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     private EditText   etLng;
     private EditText   etAlt;
     private Button     btnAddWaypoint;
+    private Button     btnImportQr;
+    private Button     btnEditWaypoint;
     private Button     btnClearWaypoints;
     private Button     btnStart;
     private Button     btnStop;
@@ -285,7 +296,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
 
         addView(inputRow);
 
-        // Add / Clear buttons
+        // Add / Import buttons
         LinearLayout btnRow1 = new LinearLayout(context);
         btnRow1.setOrientation(HORIZONTAL);
         btnRow1.setPadding(0, 8, 0, 8);
@@ -299,21 +310,46 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         btnAddWaypoint.setOnClickListener(v -> onAddWaypoint());
         btnRow1.addView(btnAddWaypoint);
 
-        btnClearWaypoints = new Button(context);
-        btnClearWaypoints.setText("Clear All");
+        btnImportQr = new Button(context);
+        btnImportQr.setText("Import QR");
         LinearLayout.LayoutParams bP2 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        btnClearWaypoints.setLayoutParams(bP2);
-        btnClearWaypoints.setOnClickListener(v -> onClearWaypoints());
-        btnRow1.addView(btnClearWaypoints);
+        btnImportQr.setLayoutParams(bP2);
+        btnImportQr.setOnClickListener(v -> onImportWaypointsQr());
+        btnRow1.addView(btnImportQr);
 
         addView(btnRow1);
+
+        // Edit / Clear buttons
+        LinearLayout btnRowEdit = new LinearLayout(context);
+        btnRowEdit.setOrientation(HORIZONTAL);
+        btnRowEdit.setPadding(0, 0, 0, 8);
+
+        btnEditWaypoint = new Button(context);
+        btnEditWaypoint.setText("Edit Waypoint");
+        LinearLayout.LayoutParams bP3 = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        bP3.setMarginEnd(8);
+        btnEditWaypoint.setLayoutParams(bP3);
+        btnEditWaypoint.setOnClickListener(v -> onEditWaypoint());
+        btnRowEdit.addView(btnEditWaypoint);
+
+        btnClearWaypoints = new Button(context);
+        btnClearWaypoints.setText("Clear All");
+        LinearLayout.LayoutParams bP4 = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btnClearWaypoints.setLayoutParams(bP4);
+        btnClearWaypoints.setOnClickListener(v -> onClearWaypoints());
+        btnRowEdit.addView(btnClearWaypoints);
+
+        addView(btnRowEdit);
 
         // Waypoint list display
         tvWaypointList = new TextView(context);
         tvWaypointList.setText("Waypoints: (none)");
         tvWaypointList.setTextSize(12f);
         tvWaypointList.setPadding(0, 0, 0, 12);
+        tvWaypointList.setOnClickListener(v -> onEditWaypoint());
         addView(tvWaypointList);
 
         // add default waypoints only after tvWaypointList exists
@@ -334,18 +370,18 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
 
         btnStart = new Button(context);
         btnStart.setText("Start Mission");
-        LinearLayout.LayoutParams bP3 = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams bP5 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        bP3.setMarginEnd(8);
-        btnStart.setLayoutParams(bP3);
+        bP5.setMarginEnd(8);
+        btnStart.setLayoutParams(bP5);
         btnStart.setOnClickListener(v -> onStartMission());
         btnRow2.addView(btnStart);
 
         btnStop = new Button(context);
         btnStop.setText("Stop Mission");
-        LinearLayout.LayoutParams bP4 = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams bP6 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        btnStop.setLayoutParams(bP4);
+        btnStop.setLayoutParams(bP6);
         btnStop.setEnabled(false);
         btnStop.setOnClickListener(v -> onStopMission());
         btnRow2.addView(btnStop);
@@ -477,6 +513,13 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     // ---------------------------------------------------------------------------------
 
     private void initFlightController() {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            prepareOfflineDebugPosition();
+            tvStatus.setText("Mission: OFFLINE DEBUG");
+            appendLog("Offline debug mode enabled. Drone/controller connection is skipped.");
+            return;
+        }
+
         if (DJISampleApplication.getProductInstance() == null) {
             appendLog("No aircraft connected.");
             return;  // exit safely instead of crashing
@@ -561,33 +604,157 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         String lngStr = etLng.getText().toString().trim();
         String altStr = etAlt.getText().toString().trim();
 
-        if (latStr.isEmpty() || lngStr.isEmpty()) {
-            showToast("Enter latitude and longitude.");
-            return;
-        }
-
-        double lat, lng;
-        float  alt;
+        double[] waypoint;
         try {
-            lat = Double.parseDouble(latStr);
-            lng = Double.parseDouble(lngStr);
-            alt = altStr.isEmpty() ? 10.0f : Float.parseFloat(altStr);
-        } catch (NumberFormatException e) {
-            showToast("Invalid coordinates.");
+            waypoint = parseWaypointFields(latStr, lngStr, altStr);
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
             return;
         }
 
-        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-            showToast("Coordinates out of valid GPS range.");
-            return;
-        }
-
-        waypointList.add(new double[]{lat, lng, alt});
+        waypointList.add(waypoint);
         etLat.setText("");
         etLng.setText("");
         refreshWaypointList();
         appendLog(String.format("Added waypoint %d: (%.6f, %.6f) @ %.1fm",
-                waypointList.size(), lat, lng, alt));
+                waypointList.size(), waypoint[0], waypoint[1], waypoint[2]));
+    }
+
+    private void onImportWaypointsQr() {
+        if (missionRunning) {
+            showToast("Stop the mission before importing waypoints.");
+            return;
+        }
+
+        Context context = getContext();
+        if (!(context instanceof Activity)) {
+            showToast("QR scanner needs an activity context.");
+            return;
+        }
+
+        QrWaypointScanActivity.setResultListener(payload -> post(() -> handleWaypointQrPayload(payload)));
+        context.startActivity(new Intent(context, QrWaypointScanActivity.class));
+        appendLog("Waypoint QR scanner opened.");
+    }
+
+    private void handleWaypointQrPayload(String payload) {
+        if (missionRunning) {
+            showToast("Stop the mission before importing waypoints.");
+            return;
+        }
+
+        final List<double[]> importedWaypoints;
+        try {
+            importedWaypoints = parseWaypointQrPayload(payload);
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            appendLog("QR import failed: " + e.getMessage());
+            return;
+        }
+
+        StringBuilder preview = new StringBuilder();
+        preview.append("Found ").append(importedWaypoints.size()).append(" waypoint");
+        if (importedWaypoints.size() != 1) preview.append("s");
+        preview.append(":\n\n");
+        for (int i = 0; i < importedWaypoints.size(); i++) {
+            double[] wp = importedWaypoints.get(i);
+            preview.append(String.format("%d: %.6f, %.6f @ %.1fm\n",
+                    i + 1, wp[0], wp[1], wp[2]));
+        }
+
+        new AlertDialog.Builder(getContext())
+                .setTitle("Import Waypoints")
+                .setMessage(preview.toString())
+                .setPositiveButton("Append", (dialog, which) -> {
+                    waypointList.addAll(copyWaypoints(importedWaypoints));
+                    refreshWaypointList();
+                    appendLog("Imported " + importedWaypoints.size() + " waypoint(s) from QR.");
+                })
+                .setNeutralButton("Replace", (dialog, which) -> {
+                    waypointList.clear();
+                    waypointList.addAll(copyWaypoints(importedWaypoints));
+                    currentWaypointIndex = 0;
+                    refreshWaypointList();
+                    updateTargetLabel();
+                    appendLog("Replaced waypoint list with " + importedWaypoints.size() + " QR waypoint(s).");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void onEditWaypoint() {
+        if (missionRunning) {
+            showToast("Stop the mission before editing waypoints.");
+            return;
+        }
+        if (waypointList.isEmpty()) {
+            showToast("No waypoints to edit.");
+            return;
+        }
+
+        String[] waypointLabels = new String[waypointList.size()];
+        for (int i = 0; i < waypointList.size(); i++) {
+            double[] wp = waypointList.get(i);
+            waypointLabels[i] = String.format("WP%d: %.6f, %.6f @ %.1fm",
+                    i + 1, wp[0], wp[1], wp[2]);
+        }
+
+        new AlertDialog.Builder(getContext())
+                .setTitle("Edit Waypoint")
+                .setItems(waypointLabels, (dialog, which) -> showEditWaypointDialog(which))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showEditWaypointDialog(int waypointIndex) {
+        if (waypointIndex < 0 || waypointIndex >= waypointList.size()) {
+            showToast("Waypoint no longer exists.");
+            return;
+        }
+
+        double[] waypoint = waypointList.get(waypointIndex);
+        LinearLayout editor = new LinearLayout(getContext());
+        editor.setOrientation(VERTICAL);
+        int padding = 32;
+        editor.setPadding(padding, padding / 2, padding, 0);
+
+        EditText latInput = buildCoordinateEditor("Latitude", String.format("%.7f", waypoint[0]));
+        EditText lngInput = buildCoordinateEditor("Longitude", String.format("%.7f", waypoint[1]));
+        EditText altInput = buildAltitudeEditor("Altitude (m)", String.format("%.1f", waypoint[2]));
+
+        editor.addView(latInput);
+        editor.addView(lngInput);
+        editor.addView(altInput);
+
+        AlertDialog dialog = new AlertDialog.Builder(getContext())
+                .setTitle("Waypoint " + (waypointIndex + 1))
+                .setView(editor)
+                .setPositiveButton("Save", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+
+        dialog.setOnShowListener(shownDialog -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    double[] updatedWaypoint;
+                    try {
+                        updatedWaypoint = parseWaypointFields(
+                                latInput.getText().toString().trim(),
+                                lngInput.getText().toString().trim(),
+                                altInput.getText().toString().trim());
+                    } catch (IllegalArgumentException e) {
+                        showToast(e.getMessage());
+                        return;
+                    }
+
+                    waypointList.set(waypointIndex, updatedWaypoint);
+                    refreshWaypointList();
+                    updateTargetLabel();
+                    appendLog(String.format("Updated waypoint %d: (%.6f, %.6f) @ %.1fm",
+                            waypointIndex + 1, updatedWaypoint[0], updatedWaypoint[1], updatedWaypoint[2]));
+                    dialog.dismiss();
+                }));
+
+        dialog.show();
     }
 
     private void onClearWaypoints() {
@@ -598,6 +765,346 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         waypointList.clear();
         refreshWaypointList();
         appendLog("Waypoints cleared.");
+    }
+
+    private EditText buildCoordinateEditor(String hint, String value) {
+        EditText editText = new EditText(getContext());
+        editText.setHint(hint);
+        editText.setText(value);
+        editText.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        return editText;
+    }
+
+    private EditText buildAltitudeEditor(String hint, String value) {
+        EditText editText = new EditText(getContext());
+        editText.setHint(hint);
+        editText.setText(value);
+        editText.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        return editText;
+    }
+
+    private double[] parseWaypointFields(String latStr, String lngStr, String altStr) {
+        if (latStr.isEmpty() || lngStr.isEmpty()) {
+            throw new IllegalArgumentException("Enter latitude and longitude.");
+        }
+
+        double lat;
+        double lng;
+        float alt;
+        try {
+            lat = Double.parseDouble(latStr);
+            lng = Double.parseDouble(lngStr);
+            alt = altStr.isEmpty() ? 10.0f : Float.parseFloat(altStr);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid coordinates.");
+        }
+
+        return validateWaypoint(lat, lng, alt);
+    }
+
+    private List<double[]> parseWaypointQrPayload(String payload) {
+        if (payload == null || payload.trim().isEmpty()) {
+            throw new IllegalArgumentException("QR code was empty.");
+        }
+
+        String trimmedPayload = payload.trim();
+        try {
+            if (trimmedPayload.startsWith("{")) {
+                return parseWaypointJson(new JSONObject(trimmedPayload));
+            }
+            if (trimmedPayload.startsWith("[")) {
+                return parseWaypointJsonArray(new JSONArray(trimmedPayload));
+            }
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("QR JSON was not valid.");
+        }
+
+        return parseWaypointText(trimmedPayload);
+    }
+
+    private List<double[]> parseWaypointJson(JSONObject root) throws JSONException {
+        String type = root.optString("type", root.optString("mission", ""));
+        validateWaypointQrType(type);
+
+        JSONArray points = root.optJSONArray("points");
+        if (points == null) {
+            points = root.optJSONArray("waypoints");
+        }
+        if (points != null) {
+            return parseWaypointJsonArray(points);
+        }
+
+        List<double[]> result = new ArrayList<>();
+        result.add(parseWaypointJsonObject(root));
+        return result;
+    }
+
+    private List<double[]> parseWaypointJsonArray(JSONArray points) throws JSONException {
+        List<double[]> result = new ArrayList<>();
+        for (int i = 0; i < points.length(); i++) {
+            Object value = points.get(i);
+            if (!(value instanceof JSONObject)) {
+                throw new IllegalArgumentException("Waypoint JSON points must be objects.");
+            }
+            result.add(parseWaypointJsonObject((JSONObject) value));
+        }
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException("QR code did not contain waypoints.");
+        }
+        return result;
+    }
+
+    private double[] parseWaypointJsonObject(JSONObject point) {
+        double lat = readRequiredJsonDouble(point, "lat", "latitude");
+        double lng = readRequiredJsonDouble(point, "lng", "lon", "longitude");
+        float alt = (float) readOptionalJsonDouble(point, getDefaultImportAltitude(), "alt", "altitude");
+        return validateWaypoint(lat, lng, alt);
+    }
+
+    private List<double[]> parseWaypointText(String payload) {
+        List<double[]> result = new ArrayList<>();
+        String[] lines = payload.split("\\r?\\n");
+        boolean sawDataLine = false;
+
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+
+            if (!sawDataLine && !line.contains(",")) {
+                validateWaypointQrType(line);
+                sawDataLine = true;
+                continue;
+            }
+
+            sawDataLine = true;
+            result.add(parseWaypointTextLine(line));
+        }
+
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException("QR code did not contain waypoints.");
+        }
+        return result;
+    }
+
+    private double[] parseWaypointTextLine(String line) {
+        String[] columns = line.split(",");
+        for (int i = 0; i < columns.length; i++) {
+            columns[i] = columns[i].trim();
+        }
+
+        if (columns.length < 2) {
+            throw new IllegalArgumentException("Waypoint QR lines need latitude and longitude.");
+        }
+
+        int latIndex;
+        int lngIndex;
+        int altIndex;
+
+        if (isNumeric(columns[0])) {
+            latIndex = 0;
+            lngIndex = 1;
+            altIndex = 2;
+        } else if (columns.length >= 4 && !isNumeric(columns[1])) {
+            validateWaypointQrType(columns[1]);
+            latIndex = 2;
+            lngIndex = 3;
+            altIndex = 4;
+        } else {
+            latIndex = 1;
+            lngIndex = 2;
+            altIndex = 3;
+        }
+
+        if (columns.length <= lngIndex) {
+            throw new IllegalArgumentException("Waypoint QR lines need latitude and longitude.");
+        }
+
+        try {
+            double lat = Double.parseDouble(columns[latIndex]);
+            double lng = Double.parseDouble(columns[lngIndex]);
+            float alt = columns.length > altIndex && !columns[altIndex].isEmpty()
+                    ? Float.parseFloat(columns[altIndex])
+                    : getDefaultImportAltitude();
+            return validateWaypoint(lat, lng, alt);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Waypoint QR contains invalid coordinates.");
+        }
+    }
+
+    private void validateWaypointQrType(String type) {
+        String normalizedType = type == null ? "" : type.trim().toUpperCase();
+        if (normalizedType.isEmpty()
+                || normalizedType.equals("WAYPOINTS")
+                || normalizedType.equals("WAYPOINT")
+                || normalizedType.equals("VS_WAYPOINTS")) {
+            return;
+        }
+        if (normalizedType.equals("PACKAGE_DROP") || normalizedType.equals("DROP_TARGET")) {
+            throw new IllegalArgumentException("This QR contains a package drop target, not waypoints.");
+        }
+        if (normalizedType.equals("TIME_TRIAL") || normalizedType.equals("CIRCUIT_TIME_TRIAL")) {
+            throw new IllegalArgumentException("This QR contains a time trial route, not waypoints.");
+        }
+        throw new IllegalArgumentException("This QR is not a waypoint QR.");
+    }
+
+    private double[] validateWaypoint(double lat, double lng, float alt) {
+        if (Double.isNaN(lat) || Double.isNaN(lng) || Float.isNaN(alt)
+                || Double.isInfinite(lat) || Double.isInfinite(lng) || Float.isInfinite(alt)) {
+            throw new IllegalArgumentException("Coordinates must be finite numbers.");
+        }
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            throw new IllegalArgumentException("Coordinates out of valid GPS range.");
+        }
+        if (alt < 0) {
+            throw new IllegalArgumentException("Altitude must be 0m or higher.");
+        }
+        return new double[]{lat, lng, alt};
+    }
+
+    private float getDefaultImportAltitude() {
+        String altStr = etAlt.getText().toString().trim();
+        if (altStr.isEmpty()) {
+            return 10.0f;
+        }
+        try {
+            float altitude = Float.parseFloat(altStr);
+            return altitude >= 0 ? altitude : 10.0f;
+        } catch (NumberFormatException e) {
+            return 10.0f;
+        }
+    }
+
+    private double readRequiredJsonDouble(JSONObject object, String... keys) {
+        for (String key : keys) {
+            if (object.has(key)) {
+                return object.optDouble(key, Double.NaN);
+            }
+        }
+        throw new IllegalArgumentException("Waypoint JSON is missing " + keys[0] + ".");
+    }
+
+    private double readOptionalJsonDouble(JSONObject object, double defaultValue, String... keys) {
+        for (String key : keys) {
+            if (object.has(key)) {
+                return object.optDouble(key, defaultValue);
+            }
+        }
+        return defaultValue;
+    }
+
+    private boolean isNumeric(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            Double.parseDouble(value.trim());
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private List<double[]> copyWaypoints(List<double[]> source) {
+        List<double[]> copy = new ArrayList<>();
+        for (double[] waypoint : source) {
+            copy.add(new double[]{waypoint[0], waypoint[1], waypoint[2]});
+        }
+        return copy;
+    }
+
+    private void prepareOfflineDebugPosition() {
+        if (waypointList.isEmpty()) {
+            currentLat = 34.048510;
+            currentLng = -117.837831;
+            currentAlt = 0.0f;
+        } else {
+            double[] firstWaypoint = waypointList.get(0);
+            currentLat = firstWaypoint[0] - metersToLatitudeDegrees(OFFLINE_START_OFFSET_M);
+            currentLng = firstWaypoint[1] - metersToLongitudeDegrees(OFFLINE_START_OFFSET_M, firstWaypoint[0]);
+            currentAlt = 0.0f;
+        }
+
+        hasValidGPS = true;
+        post(() -> {
+            tvDronePos.setText(String.format(
+                    "Drone: offline sim (%.6f, %.6f)  alt: %.1fm",
+                    currentLat, currentLng, currentAlt));
+            tvDroneSpeed.setText("Speed: 0.00 m/s");
+        });
+    }
+
+    private void startOfflineDebugMission() {
+        prepareOfflineDebugPosition();
+        currentWaypointIndex = 0;
+        previousDistance = 0.0;
+        missionRunning = true;
+
+        post(() -> {
+            tvStatus.setText("Mission: OFFLINE SIM");
+            btnStart.setEnabled(false);
+            btnStop.setEnabled(true);
+            btnAddWaypoint.setEnabled(false);
+            btnImportQr.setEnabled(false);
+            btnEditWaypoint.setEnabled(false);
+            btnClearWaypoints.setEnabled(false);
+            updateTargetLabel();
+        });
+
+        appendLog("Offline debug mission started. Simulating waypoint travel.");
+        startControlLoop();
+    }
+
+    private void finishOfflineDebugMission() {
+        post(() -> {
+            appendLog("Offline debug mission complete.");
+            tvStatus.setText("Mission: OFFLINE COMPLETE");
+            btnStart.setEnabled(true);
+            btnStop.setEnabled(false);
+            btnAddWaypoint.setEnabled(true);
+            btnImportQr.setEnabled(true);
+            btnEditWaypoint.setEnabled(true);
+            btnClearWaypoints.setEnabled(true);
+            tvCurrentWaypoint.setText("Target: —");
+            tvDroneSpeed.setText("Speed: 0.00 m/s");
+        });
+    }
+
+    private void applyOfflineDebugVelocity(float pitchVelocity, float rollVelocity, float verticalVelocity) {
+        double northMeters = rollVelocity * DT;
+        double eastMeters = pitchVelocity * DT;
+
+        currentLat += metersToLatitudeDegrees(northMeters);
+        currentLng += metersToLongitudeDegrees(eastMeters, currentLat);
+        currentAlt += verticalVelocity * DT;
+        if (currentAlt < 0.0f) {
+            currentAlt = 0.0f;
+        }
+
+        float groundSpeed = (float) Math.sqrt(pitchVelocity * pitchVelocity + rollVelocity * rollVelocity);
+        post(() -> {
+            tvDronePos.setText(String.format(
+                    "Drone: offline sim (%.6f, %.6f)  alt: %.1fm",
+                    currentLat, currentLng, currentAlt));
+            tvDroneSpeed.setText(String.format("Speed: %.2f m/s", groundSpeed));
+        });
+    }
+
+    private double metersToLatitudeDegrees(double meters) {
+        return Math.toDegrees(meters / EARTH_RADIUS_M);
+    }
+
+    private double metersToLongitudeDegrees(double meters, double latitude) {
+        double latitudeRadius = EARTH_RADIUS_M * Math.cos(Math.toRadians(latitude));
+        if (Math.abs(latitudeRadius) < 1.0) {
+            return 0.0;
+        }
+        return Math.toDegrees(meters / latitudeRadius);
     }
 
     /**
@@ -614,6 +1121,12 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
             showToast("Add at least 1 waypoint.");
             return;
         }
+
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            startOfflineDebugMission();
+            return;
+        }
+
         if (flightController == null) {
             initFlightController();
             if (flightController == null) {
@@ -648,6 +1161,8 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
                 btnStart.setEnabled(false);
                 btnStop.setEnabled(true);
                 btnAddWaypoint.setEnabled(false);
+                btnImportQr.setEnabled(false);
+                btnEditWaypoint.setEnabled(false);
                 btnClearWaypoints.setEnabled(false);
                 updateTargetLabel();
             });
@@ -691,6 +1206,8 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
             btnStart.setEnabled(true);
             btnStop.setEnabled(false);
             btnAddWaypoint.setEnabled(true);
+            btnImportQr.setEnabled(true);
+            btnEditWaypoint.setEnabled(true);
             btnClearWaypoints.setEnabled(true);
             tvCurrentWaypoint.setText("Target: —");
         });
@@ -766,6 +1283,10 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
                     flightLogger.stop();
                     appendLog("Log saved to: " + flightLogger.getLogFilePath());
                 }
+                if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+                    finishOfflineDebugMission();
+                    return;
+                }
                 triggerRTH();
                 return;
             }
@@ -829,7 +1350,11 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
         float verticalVelocity = Kp_VERTICAL * altError;
         verticalVelocity = Math.max(-MAX_VERTICAL_SPEED, Math.min(MAX_VERTICAL_SPEED, verticalVelocity));
 
-        sendVelocityCommand(pitchVelocity, rollVelocity, verticalVelocity);
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            applyOfflineDebugVelocity(pitchVelocity, rollVelocity, verticalVelocity);
+        } else {
+            sendVelocityCommand(pitchVelocity, rollVelocity, verticalVelocity);
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -849,6 +1374,7 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
      * computed yaw rate based on bearingRad.
      */
     private void sendVelocityCommand(float pitch, float roll, float vertical) {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) return;
         if (flightController == null) return;
 
         // FlightControlData constructor: (pitch, roll, yaw, vertical)
@@ -866,6 +1392,10 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
     // ---------------------------------------------------------------------------------
 
     private void triggerRTH() {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            finishOfflineDebugMission();
+            return;
+        }
         if (flightController == null) return;
 
         // Disable Virtual Stick first so RTH can take over
@@ -878,6 +1408,8 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
                         btnStart.setEnabled(true);
                         btnStop.setEnabled(false);
                         btnAddWaypoint.setEnabled(true);
+                        btnImportQr.setEnabled(true);
+                        btnEditWaypoint.setEnabled(true);
                         btnClearWaypoints.setEnabled(true);
                     });
                 } else {
@@ -1001,5 +1533,6 @@ public class VirtualStickWaypointView extends LinearLayout implements Presentabl
             flightController.setStateCallback(null);
             flightController.setVirtualStickModeEnabled(false, null);
         }
+        QrWaypointScanActivity.clearResultListener();
     }
 }
