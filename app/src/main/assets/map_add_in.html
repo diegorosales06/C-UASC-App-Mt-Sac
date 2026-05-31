@@ -47,6 +47,8 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
     (function () {
+        const IMAGERY_MAX_ZOOM = 20;
+        const STREETS_MAX_ZOOM = 22;
         const fallbackCenter = [34.04635, -117.84552];
         let map;
         let baseLayer;
@@ -70,17 +72,19 @@
         let latestDropPoint = null;
 
         const imagery = L.tileLayer(
-            "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             {
-                maxZoom: 20,
-                attribution: "Imagery: USGS The National Map"
+                maxNativeZoom: IMAGERY_MAX_ZOOM,
+                maxZoom: IMAGERY_MAX_ZOOM,
+                attribution: "Imagery: Esri, Vantor, Earthstar Geographics, and the GIS User Community"
             }
         );
 
         const streets = L.tileLayer(
             "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
             {
-                maxZoom: 19,
+                maxNativeZoom: 19,
+                maxZoom: STREETS_MAX_ZOOM,
                 attribution: "&copy; OpenStreetMap contributors"
             }
         );
@@ -94,7 +98,8 @@
 
             map = L.map("map", {
                 center: fallbackCenter,
-                zoom: 19,
+                zoom: 18,
+                maxZoom: IMAGERY_MAX_ZOOM,
                 zoomControl: true,
                 attributionControl: true
             });
@@ -259,11 +264,20 @@
         window.mapAddIn = {
             setBaseLayer: function (name) {
                 const next = name === "streets" ? streets : imagery;
+                const nextMaxZoom = name === "streets" ? STREETS_MAX_ZOOM : IMAGERY_MAX_ZOOM;
                 if (baseLayer === next) {
+                    map.setMaxZoom(nextMaxZoom);
+                    if (map.getZoom() > nextMaxZoom) {
+                        map.setZoom(nextMaxZoom);
+                    }
                     return;
                 }
                 if (baseLayer) {
                     map.removeLayer(baseLayer);
+                }
+                map.setMaxZoom(nextMaxZoom);
+                if (map.getZoom() > nextMaxZoom) {
+                    map.setZoom(nextMaxZoom);
                 }
                 baseLayer = next;
                 baseLayer.addTo(map);
@@ -328,7 +342,7 @@
                 }
                 map.fitBounds(L.latLngBounds(points.map(toLatLng)), {
                     padding: [44, 44],
-                    maxZoom: 20
+                    maxZoom: 18
                 });
             }
         };

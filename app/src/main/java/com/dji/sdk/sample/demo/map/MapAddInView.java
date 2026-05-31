@@ -27,7 +27,7 @@ import java.util.Locale;
  * Reusable free map add-in for mission screens.
  *
  * This uses a local Leaflet page inside WebView, OpenStreetMap for streets,
- * and USGS National Map imagery for satellite-style aerial tiles in the U.S.
+ * and Esri World Imagery for satellite-style aerial tiles.
  */
 public class MapAddInView extends FrameLayout {
 
@@ -235,7 +235,7 @@ public class MapAddInView extends FrameLayout {
 
     private void updateMapStatus() {
         if (latestDronePoint == null) {
-            statusView.setText(imageryMap ? "USGS imagery" : "OSM streets");
+            statusView.setText(imageryMap ? "Esri imagery" : "OSM streets");
             return;
         }
         statusView.setText(String.format(Locale.US,
