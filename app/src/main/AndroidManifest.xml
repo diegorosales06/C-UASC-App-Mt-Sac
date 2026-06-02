@@ -19,12 +19,17 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <uses-feature
         android:name="android.hardware.usb.host"
         android:required="false"/>
     <uses-feature
         android:name="android.hardware.usb.accessory"
         android:required="true"/>
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false"/>
 
 
     <!-- SDK requirement permission end -->
@@ -72,6 +77,11 @@
                 android:resource="@xml/accessory_filter"/>
         </activity>
 
+        <activity
+            android:name="com.dji.sdk.sample.demo.virtualstickwaypoint.QrWaypointScanActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/AppTheme"
+            android:exported="false"/>
         <activity
             android:name="com.dji.sdk.sample.demo.payload.PayloadActivity"
             android:configChanges="orientation|screenSize"
