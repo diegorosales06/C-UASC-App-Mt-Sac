@@ -13,6 +13,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointStore;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
@@ -30,13 +31,18 @@ import dji.keysdk.callback.KeyListener;
 /**
  * Standalone map screen that exercises the reusable free map add-in with
  * mock telemetry or DJI aircraft-location telemetry.
+ *
+ * Waypoints are loaded from WaypointStore (replacing the previous
+ * MissionMapDataStore dependency). This means waypoints added or cleared in
+ * VirtualStickWaypointView are immediately reflected here when "Reload Map"
+ * is tapped, since both views share the same SharedPreferences backing store.
  */
 public class MapTrackingView extends LinearLayout implements PresentableView {
 
-    private static final String PREFS_NAME = "geofencing_prefs";
+    private static final String PREFS_NAME     = "geofencing_prefs";
     private static final String PREFS_KEY_COUNT = "waypoint_count";
-    private static final String PREFS_KEY_LAT = "waypoint_lat_";
-    private static final String PREFS_KEY_LNG = "waypoint_lng_";
+    private static final String PREFS_KEY_LAT   = "waypoint_lat_";
+    private static final String PREFS_KEY_LNG   = "waypoint_lng_";
 
     private static final double[][] DEFAULT_FENCE_VERTICES = {
             {34.04618635227991, -117.84552701364355},
@@ -46,26 +52,26 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
     };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final List<MapPoint> fenceVertices = new ArrayList<>();
+    private final List<MapPoint> fenceVertices         = new ArrayList<>();
     private final List<MapPoint> virtualStickWaypoints = new ArrayList<>();
-    private final List<MapPoint> mockRoute = new ArrayList<>();
+    private final List<MapPoint> mockRoute             = new ArrayList<>();
 
     private MapAddInView mapAddInView;
-    private TextView statusText;
-    private TextView coordinateText;
-    private Button telemetryModeButton;
-    private Button reloadFenceButton;
-    private Button dropPointButton;
+    private TextView     statusText;
+    private TextView     coordinateText;
+    private Button       telemetryModeButton;
+    private Button       reloadFenceButton;
+    private Button       dropPointButton;
 
-    private boolean useMockTelemetry;
-    private boolean started;
-    private boolean showingDropPoint;
+    private boolean  useMockTelemetry;
+    private boolean  started;
+    private boolean  showingDropPoint;
     private MapPoint currentDronePoint;
-    private double currentHeadingDegrees;
-    private int mockSegmentIndex;
-    private double mockSegmentProgress;
+    private double   currentHeadingDegrees;
+    private int      mockSegmentIndex;
+    private double   mockSegmentProgress;
 
-    private DJIKey aircraftLocationKey;
+    private DJIKey      aircraftLocationKey;
     private KeyListener aircraftLocationListener;
 
     private final Runnable mockTick = new Runnable() {
@@ -87,22 +93,18 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
     }
 
     @Override
-    public int getDescription() {
-        return 0;
-    }
+    public int getDescription() { return 0; }
 
     @NonNull
     @Override
-    public String getHint() {
-        return this.getClass().getSimpleName() + ".java";
-    }
+    public String getHint() { return this.getClass().getSimpleName() + ".java"; }
 
     private void init(Context context) {
         setOrientation(VERTICAL);
         setPadding(dp(12), dp(12), dp(12), dp(12));
 
         loadFenceVertices(context);
-        loadVirtualStickWaypoints(context);
+        loadVirtualStickWaypoints(context);   // ← now reads from WaypointStore
         rebuildMockRoute();
 
         statusText = new TextView(context);
@@ -112,8 +114,7 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
         addView(statusText, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
         mapAddInView = new MapAddInView(context);
-        LayoutParams mapParams = new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f);
-        addView(mapAddInView, mapParams);
+        addView(mapAddInView, new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
 
         coordinateText = new TextView(context);
         coordinateText.setTextSize(13f);
@@ -160,10 +161,11 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
 
     private void toggleTelemetryMode() {
         if (useMockTelemetry && !isDjiTelemetryAvailable()) {
-            Toast.makeText(getContext(), "DJI telemetry is not available, staying in mock mode.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(getContext(),
+                    "DJI telemetry is not available, staying in mock mode.",
+                    Toast.LENGTH_SHORT).show();
             return;
         }
-
         useMockTelemetry = !useMockTelemetry;
         currentDronePoint = null;
         mapAddInView.clearTrail();
@@ -172,7 +174,7 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
 
     private void reloadFence() {
         loadFenceVertices(getContext());
-        loadVirtualStickWaypoints(getContext());
+        loadVirtualStickWaypoints(getContext());  // ← re-reads from WaypointStore
         rebuildMockRoute();
         showingDropPoint = false;
         mapAddInView.clearTrail();
@@ -200,16 +202,12 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
     }
 
     private void startTelemetry() {
-        if (started) {
-            return;
-        }
+        if (started) return;
         started = true;
-
         if (!useMockTelemetry && startDjiTelemetry()) {
             updateModeButton();
             return;
         }
-
         useMockTelemetry = true;
         startMockTelemetry();
         updateModeButton();
@@ -261,29 +259,29 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
     }
 
     private void handleDjiLocation(Object value) {
-        MapPoint point = null;
-        float altitude = 0f;
+        MapPoint point   = null;
+        float    altitude = 0f;
 
         if (value instanceof LocationCoordinate3D) {
             LocationCoordinate3D location = (LocationCoordinate3D) value;
-            point = new MapPoint(location.getLatitude(), location.getLongitude());
+            point    = new MapPoint(location.getLatitude(), location.getLongitude());
             altitude = location.getAltitude();
         } else if (value instanceof LocationCoordinate2D) {
             LocationCoordinate2D location = (LocationCoordinate2D) value;
             point = new MapPoint(location.getLatitude(), location.getLongitude());
         }
 
-        if (point == null || !isValidCoordinate(point)) {
-            return;
-        }
+        if (point == null || !isValidCoordinate(point)) return;
 
-        double heading = currentDronePoint == null ? currentHeadingDegrees : bearingDegrees(currentDronePoint, point);
+        double heading = currentDronePoint == null
+                ? currentHeadingDegrees
+                : bearingDegrees(currentDronePoint, point);
         updateTelemetry(point, altitude, heading, "DJI");
     }
 
     private void startMockTelemetry() {
         rebuildMockRoute();
-        mockSegmentIndex = 0;
+        mockSegmentIndex    = 0;
         mockSegmentProgress = 0.0;
         statusText.setText("Map telemetry: mock drone route");
         handler.removeCallbacks(mockTick);
@@ -291,15 +289,14 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
     }
 
     private void emitMockTelemetry() {
-        if (mockRoute.size() < 2) {
-            return;
-        }
+        if (mockRoute.size() < 2) return;
 
-        MapPoint start = mockRoute.get(mockSegmentIndex);
-        MapPoint end = mockRoute.get((mockSegmentIndex + 1) % mockRoute.size());
-        MapPoint point = interpolate(start, end, mockSegmentProgress);
-        double heading = bearingDegrees(start, end);
-        float altitude = (float) (14.0 + Math.sin((mockSegmentIndex + mockSegmentProgress) * Math.PI) * 2.0);
+        MapPoint start   = mockRoute.get(mockSegmentIndex);
+        MapPoint end     = mockRoute.get((mockSegmentIndex + 1) % mockRoute.size());
+        MapPoint point   = interpolate(start, end, mockSegmentProgress);
+        double   heading = bearingDegrees(start, end);
+        float    altitude = (float)(14.0 + Math.sin(
+                (mockSegmentIndex + mockSegmentProgress) * Math.PI) * 2.0);
 
         updateTelemetry(point, altitude, heading, "Mock");
 
@@ -310,27 +307,26 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
         }
     }
 
-    private void updateTelemetry(MapPoint point, float altitude, double headingDegrees, String source) {
-        currentDronePoint = point;
-        currentHeadingDegrees = headingDegrees;
+    private void updateTelemetry(MapPoint point, float altitude,
+                                 double headingDegrees, String source) {
+        currentDronePoint      = point;
+        currentHeadingDegrees  = headingDegrees;
 
-        boolean inside = fenceVertices.size() >= 3 && isPointInPolygon(point, fenceVertices);
+        boolean inside = fenceVertices.size() >= 3
+                && isPointInPolygon(point, fenceVertices);
         statusText.setText(String.format(Locale.US,
-                "Map telemetry: %s | fence %s",
-                source,
-                inside ? "INSIDE" : "OUTSIDE"));
+                "Map telemetry: %s | fence %s", source, inside ? "INSIDE" : "OUTSIDE"));
         coordinateText.setText(String.format(Locale.US,
                 "Drone: %.6f, %.6f  alt %.1fm  heading %.0f deg",
-                point.latitude,
-                point.longitude,
-                altitude,
-                headingDegrees));
+                point.latitude, point.longitude, altitude, headingDegrees));
         mapAddInView.updateDrone(point, altitude, headingDegrees, inside);
     }
 
     private boolean isDjiTelemetryAvailable() {
         return KeyManager.getInstance() != null && DJISampleApplication.isAircraftConnected();
     }
+
+    // ── Fence vertices — unchanged, reads from geofencing_prefs ──────────────
 
     private void loadFenceVertices(Context context) {
         fenceVertices.clear();
@@ -348,9 +344,7 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
             double lat = Double.longBitsToDouble(prefs.getLong(PREFS_KEY_LAT + i, 0));
             double lng = Double.longBitsToDouble(prefs.getLong(PREFS_KEY_LNG + i, 0));
             MapPoint point = new MapPoint(lat, lng);
-            if (isValidCoordinate(point)) {
-                fenceVertices.add(point);
-            }
+            if (isValidCoordinate(point)) fenceVertices.add(point);
         }
 
         if (fenceVertices.isEmpty()) {
@@ -360,10 +354,25 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
         }
     }
 
+    // ── Waypoint loading — reads from WaypointStore ───────────────────────────
+
+    /**
+     * Loads virtual stick waypoints from WaypointStore.
+     *
+     * Previously read from MissionMapDataStore. Now reads from WaypointStore
+     * so this view always reflects the same waypoints as VirtualStickWaypointView.
+     * WaypointStore automatically migrates any data previously saved by
+     * MissionMapDataStore on first construction.
+     */
     private void loadVirtualStickWaypoints(Context context) {
         virtualStickWaypoints.clear();
-        virtualStickWaypoints.addAll(MissionMapDataStore.loadVirtualStickMapPoints(context));
+        WaypointStore store = new WaypointStore(context);
+        for (double[] wp : store.getWaypoints()) {
+            virtualStickWaypoints.add(new MapPoint(wp[0], wp[1]));
+        }
     }
+
+    // ── Mock route ────────────────────────────────────────────────────────────
 
     private void rebuildMockRoute() {
         mockRoute.clear();
@@ -374,9 +383,7 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
             }
             return;
         }
-        if (fenceVertices.size() < 3) {
-            return;
-        }
+        if (fenceVertices.size() < 3) return;
 
         MapPoint center = centroid(fenceVertices);
         mockRoute.add(center);
@@ -394,6 +401,8 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
         return interpolate(centroid(fenceVertices), fenceVertices.get(0), 0.72);
     }
 
+    // ── UI helpers ────────────────────────────────────────────────────────────
+
     private Button makeButton(Context context, String text) {
         Button button = new Button(context);
         button.setText(text);
@@ -404,9 +413,7 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
 
     private LayoutParams weightedParams(boolean marginEnd) {
         LayoutParams params = new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
-        if (marginEnd) {
-            params.setMarginEnd(dp(6));
-        }
+        if (marginEnd) params.setMarginEnd(dp(6));
         return params;
     }
 
@@ -414,63 +421,50 @@ public class MapTrackingView extends LinearLayout implements PresentableView {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    // ── Geometry helpers — unchanged ──────────────────────────────────────────
+
     private static boolean isValidCoordinate(MapPoint point) {
-        return point.latitude >= -90.0
-                && point.latitude <= 90.0
-                && point.longitude >= -180.0
-                && point.longitude <= 180.0
+        return point.latitude  >= -90.0 && point.latitude  <= 90.0
+                && point.longitude >= -180.0 && point.longitude <= 180.0
                 && !(point.latitude == 0.0 && point.longitude == 0.0);
     }
 
     private static MapPoint centroid(List<MapPoint> points) {
-        double lat = 0.0;
-        double lng = 0.0;
-        for (MapPoint point : points) {
-            lat += point.latitude;
-            lng += point.longitude;
-        }
+        double lat = 0.0, lng = 0.0;
+        for (MapPoint p : points) { lat += p.latitude; lng += p.longitude; }
         return new MapPoint(lat / points.size(), lng / points.size());
     }
 
     private static MapPoint interpolate(MapPoint start, MapPoint end, double amount) {
         return new MapPoint(
-                start.latitude + (end.latitude - start.latitude) * amount,
+                start.latitude  + (end.latitude  - start.latitude)  * amount,
                 start.longitude + (end.longitude - start.longitude) * amount);
     }
 
     private static MapPoint projectBeyond(MapPoint origin, MapPoint target, double scale) {
         return new MapPoint(
-                origin.latitude + (target.latitude - origin.latitude) * scale,
+                origin.latitude  + (target.latitude  - origin.latitude)  * scale,
                 origin.longitude + (target.longitude - origin.longitude) * scale);
     }
 
     private static boolean isPointInPolygon(MapPoint point, List<MapPoint> polygon) {
-        int n = polygon.size();
-        if (n < 3) {
-            return false;
-        }
-
+        int     n      = polygon.size();
         boolean inside = false;
-        int j = n - 1;
+        int     j      = n - 1;
         for (int i = 0; i < n; i++) {
-            double xi = polygon.get(i).latitude;
-            double yi = polygon.get(i).longitude;
-            double xj = polygon.get(j).latitude;
-            double yj = polygon.get(j).longitude;
-
+            double xi = polygon.get(i).latitude,  yi = polygon.get(i).longitude;
+            double xj = polygon.get(j).latitude,  yj = polygon.get(j).longitude;
             boolean intersect = ((yi > point.longitude) != (yj > point.longitude))
                     && (point.latitude < (xj - xi) * (point.longitude - yi) / (yj - yi) + xi);
-            if (intersect) {
-                inside = !inside;
-            }
+            if (intersect) inside = !inside;
             j = i;
         }
         return inside;
     }
 
     private static double bearingDegrees(MapPoint start, MapPoint end) {
-        double lat1 = Math.toRadians(start.latitude);
-        double lat2 = Math.toRadians(end.latitude);
+        double lat1     = Math.toRadians(start.latitude);
+        double lat2     = Math.toRadians(end.latitude);
         double lngDelta = Math.toRadians(end.longitude - start.longitude);
         double y = Math.sin(lngDelta) * Math.cos(lat2);
         double x = Math.cos(lat1) * Math.sin(lat2)
