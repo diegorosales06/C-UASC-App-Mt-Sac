@@ -280,13 +280,13 @@ public class WaypointStore {
      */
     private void loadDefaults() {
         waypointList.clear();
-        waypointList.add(new double[]{34.048510, -117.837831, 3});
-        waypointList.add(new double[]{34.048414, -117.837468, 3});
-        waypointList.add(new double[]{34.048140, -117.837227, 3});
-        waypointList.add(new double[]{34.048121, -117.837787, 3});
-        waypointList.add(new double[]{34.047934, -117.837956, 3});
-        waypointList.add(new double[]{34.047717, -117.837637, 3});
-        waypointList.add(new double[]{34.047729, -117.837246, 3});
+        waypointList.add(new double[]{34.048361, -117.837827, 3});
+        waypointList.add(new double[]{34.048316, -117.837427, 3});
+        waypointList.add(new double[]{34.0482, -117.8378, 3});
+        waypointList.add(new double[]{34.048016, -117.837592, 3});
+        waypointList.add(new double[]{34.0476, -117.8374, 3});
+        waypointList.add(new double[]{34.0477, -117.8378, 3});
+        waypointList.add(new double[]{34.0478, -117.8381, 3});
         saveToPrefs();
     }
 

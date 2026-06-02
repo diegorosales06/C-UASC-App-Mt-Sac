@@ -31,7 +31,7 @@ public final class WaypointNavigationMath {
      * When haversineDistance to the target waypoint drops below this value the
      * drone is considered to have "reached" the waypoint horizontally.
      */
-    public static final double ACCEPTANCE_RADIUS_M = 0.2;
+    public static final double ACCEPTANCE_RADIUS_M = 0.1;
 
     /**
      * Vertical acceptance threshold in meters.
