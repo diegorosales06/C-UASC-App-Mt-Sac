@@ -76,6 +76,12 @@ public class WaypointMissionController {
     // Vertical: how close (meters) in altitude before a waypoint counts
     private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
 
+    // ── Takeoff ───────────────────────────────────────────────────────────────
+    // Minimum altitude (meters) the drone must reach after takeoff before the
+    // waypoint mission control loop begins. Change this if your takeoff hover
+    // height differs or you want to wait for a higher stable altitude.
+    private static final float TAKEOFF_STABLE_ALT_M = 1.0f;
+
     // ── Speed limits ──────────────────────────────────────────────────────────
     private static final float MIN_HORIZONTAL_SPEED = 0.3f;
     private static final float MAX_VERTICAL_SPEED   = 2.0f;
@@ -91,6 +97,7 @@ public class WaypointMissionController {
 
     // ── Mission state ─────────────────────────────────────────────────────────
     private boolean missionRunning       = false;
+    private boolean isTakingOff         = false; // true while waiting for stable hover
     private int     currentWaypointIndex = 0;
     private double  previousDistance     = 0.0;
 
@@ -177,8 +184,16 @@ public class WaypointMissionController {
     }
 
     /**
-     * Starts the waypoint mission. Validates preconditions, enables Virtual
-     * Stick mode, resets state, starts the 20Hz control loop.
+     * Starts the waypoint mission.
+     *
+     * If the drone is already airborne (isFlying == true) it skips takeoff and
+     * enables Virtual Stick immediately — same behavior as before.
+     *
+     * If the drone is on the ground it calls startTakeoff() first, then polls
+     * currentAlt on every flight controller state callback until the drone
+     * reaches TAKEOFF_STABLE_ALT_M. At that point Virtual Stick is enabled and
+     * the control loop starts with the vertical P controller handling the climb
+     * to waypoint altitude.
      */
     public void startMission() {
         if (store.size() < 1) {
@@ -204,12 +219,59 @@ public class WaypointMissionController {
             return;
         }
 
+        // ── Already airborne — skip takeoff, go straight to mission ───────────
+        if (flightController.getState() != null
+                && flightController.getState().isFlying()) {
+            callback.onLogMessage("Drone already airborne — skipping takeoff.");
+            enableVirtualStickAndBegin();
+            return;
+        }
+
+        // ── On the ground — trigger takeoff then wait for stable hover ────────
+        callback.onLogMessage("Drone on ground — initiating takeoff.");
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Mission: TAKING OFF");
+            callback.onMissionActiveChanged(true);
+        });
+
+        isTakingOff = true;
+
+        flightController.startTakeoff(error -> {
+            if (error != null) {
+                isTakingOff = false;
+                mainHandler.post(() -> {
+                    callback.onLogMessage("Takeoff failed: " + error.getDescription());
+                    callback.onStatusChanged("Mission: IDLE");
+                    callback.onMissionActiveChanged(false);
+                });
+                return;
+            }
+            // Takeoff command accepted. The flight controller state callback will
+            // now poll currentAlt and call enableVirtualStickAndBegin() once the
+            // drone reaches TAKEOFF_STABLE_ALT_M.
+            callback.onLogMessage("Takeoff command accepted. Climbing...");
+        });
+    }
+
+    /**
+     * Called either directly (drone already flying) or from the altitude poll
+     * in onFlightControllerState (drone just reached stable hover height).
+     * Enables Virtual Stick mode and starts the control loop.
+     */
+    private void enableVirtualStickAndBegin() {
+        isTakingOff = false;
+
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) {
                 callback.onLogMessage("Failed to enable Virtual Stick: "
                         + error.getDescription());
+                mainHandler.post(() -> {
+                    callback.onStatusChanged("Mission: IDLE");
+                    callback.onMissionActiveChanged(false);
+                });
                 return;
             }
+
             callback.onLogMessage("Virtual Stick mode enabled.");
             resetMissionState();
             missionRunning = true;
@@ -235,6 +297,7 @@ public class WaypointMissionController {
      */
     public void stopMission() {
         missionRunning = false;
+        isTakingOff    = false;
         isDwelling     = false;
         cancelCountdown();
         stopControlLoop();
@@ -271,8 +334,9 @@ public class WaypointMissionController {
      * Call from VirtualStickWaypointView.onDetachedFromWindow().
      */
     public void onDetached() {
-        if (missionRunning) {
+        if (missionRunning || isTakingOff) {
             missionRunning = false;
+            isTakingOff    = false;
             isDwelling     = false;
             cancelCountdown();
             stopControlLoop();
@@ -307,6 +371,19 @@ public class WaypointMissionController {
         currentAlt        = alt;
         currentHeadingDeg = (float) state.getAttitude().yaw; // degrees, -180 to +180
         hasValidGPS       = true;
+
+        // ── Takeoff altitude poll ─────────────────────────────────────────────
+        // While isTakingOff is true we wait for the drone to reach
+        // TAKEOFF_STABLE_ALT_M. Once it does, kick off the mission.
+        // isFlying() guards against triggering on a brief GPS altitude spike
+        // before the motors have even spun up.
+        if (isTakingOff && state.isFlying() && currentAlt >= TAKEOFF_STABLE_ALT_M) {
+            isTakingOff = false;
+            callback.onLogMessage(String.format(
+                    "Stable hover reached (%.1fm). Starting mission.", currentAlt));
+            mainHandler.post(() -> callback.onStatusChanged("Mission: STABILIZED"));
+            enableVirtualStickAndBegin();
+        }
 
         float vx = state.getVelocityX();
         float vy = state.getVelocityY();
@@ -681,6 +758,7 @@ public class WaypointMissionController {
     private void resetMissionState() {
         currentWaypointIndex = 0;
         previousDistance     = 0.0;
+        isTakingOff          = false;
         isDwelling           = false;
         cancelCountdown();
     }
