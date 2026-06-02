@@ -1,4 +1,4 @@
-package com.dji.sdk.sample.demo.virtualstickwaypoint;
+package com.dji.sdk.sample.demo.timetrial;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -9,60 +9,45 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
- * TuningPanel
+ * TimeTrialTuningPanel
  *
- * Owns all five tunable PD controller parameters and builds the in-app
- * tuning UI (the row of +/− buttons). Parameter values survive app restarts
- * via SharedPreferences under "vsw_tuning_prefs".
+ * Independent tuning panel for the time trial system. Uses its own
+ * SharedPreferences key "vsw_timetrial_tuning_prefs" so time trial
+ * parameters never interfere with the waypoint mission parameters.
  *
- * How to use:
- *   1. Construct one TuningPanel in VirtualStickWaypointView.init().
- *   2. Call tuningPanel.buildPanelView(context) to get the LinearLayout to add.
- *   3. Pass the TuningPanel reference to WaypointMissionController — the
- *      controller calls getters on every control loop tick.
- *   4. Changes via +/− buttons are automatically persisted and the
- *      TuningChangeListener callback fires so the controller can log the update.
+ * Default values are tuned for speed rather than precision:
+ *   - Higher default cruise speed (12 m/s vs 8 m/s)
+ *   - More aggressive deceleration (3.0 m/s² vs 2.0 m/s²)
+ *   - Wider braking distance still allows PD to engage, but drone
+ *     doesn't need to stop so the approach can be faster
  *
- * Parameters and their effect:
- *
- *   Kp_HORIZONTAL  — Proportional gain during braking phase.
- *                    Increase if drone stops short. Decrease if it oscillates.
- *
- *   Kd_HORIZONTAL  — Derivative (braking) gain.
- *                    Increase if drone overshoots. Decrease if brakes too early.
- *
- *   Kp_VERTICAL    — Proportional gain for altitude control.
- *
- *   MAX_HORIZONTAL_SPEED — Cruise speed in m/s (feedforward phase).
- *                          Keep below 12 until field-verified.
- *
- *   DECELERATION   — Simulated deceleration rate in m/s².
- *                    brakingDistance = maxSpeed² / (2 * deceleration)
+ * Structure is identical to TuningPanel — same +/- row UI, same
+ * SharedPreferences persistence, same TuningChangeListener callback.
  */
-public class TuningPanel {
+public class TimeTrialTuningPanel {
 
-    private static final String TAG        = "TuningPanel";
-    private static final String PREFS_NAME = "vsw_tuning_prefs";
+    private static final String TAG        = "TTTuningPanel";
+    private static final String PREFS_NAME = "vsw_timetrial_tuning_prefs";
 
     // SharedPreferences keys
-    private static final String KEY_KP      = "kp_horizontal";
-    private static final String KEY_KD      = "kd_horizontal";
-    private static final String KEY_KP_VERT = "kp_vertical";
-    private static final String KEY_SPEED   = "max_horizontal_speed";
-    private static final String KEY_DECEL   = "deceleration";
-    private static final String KEY_KP_YAW  = "kp_yaw";
-    private static final String KEY_YAW_MAX = "max_yaw_rate";
+    private static final String KEY_KP      = "tt_kp_horizontal";
+    private static final String KEY_KD      = "tt_kd_horizontal";
+    private static final String KEY_KP_VERT = "tt_kp_vertical";
+    private static final String KEY_SPEED   = "tt_max_horizontal_speed";
+    private static final String KEY_DECEL   = "tt_deceleration";
+    private static final String KEY_KP_YAW  = "tt_kp_yaw";
+    private static final String KEY_YAW_MAX = "tt_max_yaw_rate";
 
-    // ── Default values — used on first launch or if prefs are cleared ─────────
-    private static final float DEFAULT_KP       = 0.4f;
-    private static final float DEFAULT_KD       = 0.3f;
-    private static final float DEFAULT_KP_VERT  = 0.6f;
-    private static final float DEFAULT_SPEED    = 8.0f;
-    private static final float DEFAULT_DECEL    = 2.0f;
-    private static final float DEFAULT_KP_YAW   = 2.0f;  // deg/s per degree of error
-    private static final float DEFAULT_YAW_MAX  = 45.0f; // degrees per second cap
+    // ── Default values — tuned for speed ─────────────────────────────────────
+    private static final float DEFAULT_KP      = 0.4f;
+    private static final float DEFAULT_KD      = 0.3f;
+    private static final float DEFAULT_KP_VERT = 0.6f;
+    private static final float DEFAULT_SPEED   = 12.0f; // faster than waypoint default
+    private static final float DEFAULT_DECEL   = 3.0f;  // more aggressive braking
+    private static final float DEFAULT_KP_YAW  = 2.0f;
+    private static final float DEFAULT_YAW_MAX = 45.0f;
 
-    // ── Live parameter values — read by WaypointMissionController each tick ───
+    // ── Live parameter values ─────────────────────────────────────────────────
     private float kpHorizontal;
     private float kdHorizontal;
     private float kpVertical;
@@ -72,10 +57,6 @@ public class TuningPanel {
     private float maxYawRate;
 
     // ── Callback ──────────────────────────────────────────────────────────────
-
-    /**
-     * Fired on the main thread whenever any parameter is changed via the UI.
-     */
     public interface TuningChangeListener {
         void onTuningChanged(float kp, float kd, float kpVert,
                              float maxSpeed, float decel, float brakingDistM);
@@ -95,18 +76,12 @@ public class TuningPanel {
     // Constructor
     // =========================================================================
 
-    /**
-     * Creates a TuningPanel and immediately loads previously persisted values.
-     * Falls back to defaults if no values have been saved.
-     *
-     * @param context Application or Activity context.
-     */
-    public TuningPanel(Context context) {
+    public TimeTrialTuningPanel(Context context) {
         loadFromPrefs(context);
     }
 
     // =========================================================================
-    // Listener wiring
+    // Listener
     // =========================================================================
 
     public void setChangeListener(TuningChangeListener listener) {
@@ -114,7 +89,7 @@ public class TuningPanel {
     }
 
     // =========================================================================
-    // Getters — called by WaypointMissionController each control loop tick
+    // Getters
     // =========================================================================
 
     public float getKpHorizontal()       { return kpHorizontal; }
@@ -125,7 +100,6 @@ public class TuningPanel {
     public float getKpYaw()              { return kpYaw; }
     public float getMaxYawRate()         { return maxYawRate; }
 
-    /** Convenience: braking distance from current speed and deceleration. */
     public float getBrakingDistanceM() {
         return (maxHorizontalSpeed * maxHorizontalSpeed) / (2 * deceleration);
     }
@@ -134,59 +108,46 @@ public class TuningPanel {
     // UI construction
     // =========================================================================
 
-    /**
-     * Builds and returns the full tuning panel LinearLayout.
-     * Call once in VirtualStickWaypointView.init() and addView() the result.
-     *
-     * @param context Activity context for constructing widgets.
-     * @return Fully wired LinearLayout ready to insert into parent.
-     */
     public LinearLayout buildPanelView(Context context) {
         LinearLayout panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
 
         TextView header = new TextView(context);
-        header.setText("── Tuning ──────────────────");
+        header.setText("── Time Trial Tuning ───────");
         header.setTextSize(12f);
         header.setPadding(0, 8, 0, 4);
         panel.addView(header);
 
-        // Kp row
-        tvKp = new TextView(context);
-        tvKp.setTextSize(12f);
-        panel.addView(buildTuningRow(context, "Kp (P gain)", tvKp,
-                () -> { kpHorizontal = Math.max(0.05f, kpHorizontal - 0.05f); onChanged(context); },
-                () -> { kpHorizontal = Math.min(2.0f,  kpHorizontal + 0.05f); onChanged(context); }));
-
-        // Kd row
-        tvKd = new TextView(context);
-        tvKd.setTextSize(12f);
-        panel.addView(buildTuningRow(context, "Kd (D gain)", tvKd,
-                () -> { kdHorizontal = Math.max(0.0f, kdHorizontal - 0.05f); onChanged(context); },
-                () -> { kdHorizontal = Math.min(2.0f, kdHorizontal + 0.05f); onChanged(context); }));
-
-        // Max speed row
         tvSpeed = new TextView(context);
         tvSpeed.setTextSize(12f);
         panel.addView(buildTuningRow(context, "Max Speed (m/s)", tvSpeed,
                 () -> { maxHorizontalSpeed = Math.max(1.0f, maxHorizontalSpeed - 0.5f); onChanged(context); },
                 () -> { maxHorizontalSpeed = maxHorizontalSpeed + 0.5f;                 onChanged(context); }));
 
-        // Deceleration row
+        tvKp = new TextView(context);
+        tvKp.setTextSize(12f);
+        panel.addView(buildTuningRow(context, "Kp (P gain)", tvKp,
+                () -> { kpHorizontal = Math.max(0.05f, kpHorizontal - 0.05f); onChanged(context); },
+                () -> { kpHorizontal = Math.min(2.0f,  kpHorizontal + 0.05f); onChanged(context); }));
+
+        tvKd = new TextView(context);
+        tvKd.setTextSize(12f);
+        panel.addView(buildTuningRow(context, "Kd (D gain)", tvKd,
+                () -> { kdHorizontal = Math.max(0.0f, kdHorizontal - 0.05f); onChanged(context); },
+                () -> { kdHorizontal = Math.min(2.0f, kdHorizontal + 0.05f); onChanged(context); }));
+
         tvBraking = new TextView(context);
         tvBraking.setTextSize(12f);
         panel.addView(buildTuningRow(context, "Decel (m/s²)", tvBraking,
                 () -> { deceleration = Math.max(0.5f, deceleration - 0.25f); onChanged(context); },
                 () -> { deceleration = Math.min(5.0f, deceleration + 0.25f); onChanged(context); }));
 
-        // Kp Yaw row
         tvKpYaw = new TextView(context);
         tvKpYaw.setTextSize(12f);
         panel.addView(buildTuningRow(context, "Kp Yaw (°/s/°)", tvKpYaw,
                 () -> { kpYaw = Math.max(0.1f, kpYaw - 0.1f); onChanged(context); },
                 () -> { kpYaw = Math.min(5.0f, kpYaw + 0.1f); onChanged(context); }));
 
-        // Max yaw rate row
         tvMaxYaw = new TextView(context);
         tvMaxYaw.setTextSize(12f);
         panel.addView(buildTuningRow(context, "Max Yaw (°/s)", tvMaxYaw,
@@ -257,7 +218,7 @@ public class TuningPanel {
         refreshLabels();
         float bd = getBrakingDistanceM();
         Log.d(TAG, String.format(
-                "Tuning updated: Kp=%.2f Kd=%.2f KpV=%.2f speed=%.1f decel=%.2f brakeDist=%.1fm",
+                "TT Tuning: Kp=%.2f Kd=%.2f KpV=%.2f speed=%.1f decel=%.2f brakeDist=%.1fm",
                 kpHorizontal, kdHorizontal, kpVertical, maxHorizontalSpeed, deceleration, bd));
         if (changeListener != null) {
             changeListener.onTuningChanged(

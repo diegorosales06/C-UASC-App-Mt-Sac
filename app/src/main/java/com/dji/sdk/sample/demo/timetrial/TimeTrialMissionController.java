@@ -1,4 +1,4 @@
-package com.dji.sdk.sample.demo.virtualstickwaypoint;
+package com.dji.sdk.sample.demo.timetrial;
 
 import android.content.Context;
 import android.os.Handler;
@@ -6,11 +6,13 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
+import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointNavigationMath;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
 
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.Locale;
 
 import dji.common.flightcontroller.FlightControllerState;
 import dji.common.flightcontroller.LocationCoordinate3D;
@@ -23,68 +25,65 @@ import dji.sdk.flightcontroller.FlightController;
 import dji.sdk.products.Aircraft;
 
 /**
- * WaypointMissionController
+ * TimeTrialMissionController
  *
- * Owns the entire mission state machine, the 20Hz control loop, waypoint dwell
- * logic, Virtual Stick commands, RTH, FlightLogger, and offline debug simulation.
+ * Mission controller for time trial runs. The drone flies through all waypoints
+ * as fast as possible with NO dwell stop at each waypoint. When the acceptance
+ * radius is entered the drone immediately advances to the next waypoint index
+ * and continues flying without slowing to zero.
  *
- * This class has no Android widget imports — all UI updates are pushed back to
- * VirtualStickWaypointView through the MissionCallback interface.
+ * ── Acceptance radius ─────────────────────────────────────────────────────────
+ * ACCEPTANCE_RADIUS_M = 5.0m (wider than waypoint mission's 1.0m).
+ * Change this constant at the top of the file to adjust how close the drone
+ * must get before a gate is considered "hit".
  *
- * ── Waypoint dwell ────────────────────────────────────────────────────────────
- * When the drone reaches a waypoint (within ACCEPTANCE_RADIUS_M horizontally and
- * ALTITUDE_ACCEPTANCE_M vertically) it enters a dwell:
- *   1. A zero-velocity hover command is sent.
- *   2. isDwelling = true — the control loop sends only hover commands until dwell ends.
- *   3. A countdown Handler fires once per second to update the status label.
- *   4. After WAYPOINT_DWELL_MS the drone advances to the next waypoint (or RTH).
+ * ── Timing system ─────────────────────────────────────────────────────────────
+ * - missionStartTimeMs: recorded when mission starts
+ * - splitTimes[]: records the System.currentTimeMillis() when each waypoint
+ *   acceptance radius is entered
+ * - Elapsed timer fires every 100ms via mainHandler and calls onTimingUpdated()
+ * - Split time = time from previous split (or mission start) to this split
+ * - Both elapsed and split are formatted as MM:SS.d (tenths of seconds)
  *
- * ── Changing the dwell duration ───────────────────────────────────────────────
- * Find WAYPOINT_DWELL_MS below. Change the value in milliseconds.
- * 10_000L = 10 seconds. 5_000L = 5 seconds.
- *
- * ── Offline debug mode ────────────────────────────────────────────────────────
- * When OfflineDebugConfig.OFFLINE_DEBUG_MODE = true:
- *   - No DJI SDK calls are made.
- *   - Simulated drone position is updated mathematically each control tick.
- *   - Dwell still waits the full WAYPOINT_DWELL_MS so you can verify the countdown.
- *   - RTH is replaced by finishOfflineDebugMission().
- *
- * ── Control law ───────────────────────────────────────────────────────────────
+ * ── Control law (identical to WaypointMissionController) ─────────────────────
  * PHASE 1 — CRUISE  (distance > brakingDistance): fly at MAX_HORIZONTAL_SPEED.
  * PHASE 2 — BRAKING (distance ≤ brakingDistance): PD controller.
  *   horizontalSpeed = Kp * distance − Kd * distanceRate  (clamped [MIN, MAX])
- *   verticalSpeed   = Kp_VERTICAL * altError              (clamped ±MAX_VERTICAL)
- * brakingDistance   = maxSpeed² / (2 * deceleration)
+ * Altitude: Kp_VERTICAL * altError (clamped ±MAX_VERTICAL_SPEED)
+ * Yaw: P controller → rotate nose toward bearing, 5° deadband
+ *
+ * ── Data logging ─────────────────────────────────────────────────────────────
+ * FlightLogger writes CSV with an extra "split_ms" column appended:
+ *   timestamp_ms, latitude, longitude, inside, split_ms
+ * split_ms is 0 except at the tick when a waypoint is accepted, where it holds
+ * the split duration in milliseconds.
  */
-public class WaypointMissionController {
+public class TimeTrialMissionController {
 
-    private static final String TAG = "VSWMissionController";
+    private static final String TAG = "TTMissionController";
 
-    // ── Dwell duration ────────────────────────────────────────────────────────
-    // Time (ms) the drone hovers at each waypoint before proceeding.
-    // Change this value to adjust the stop duration.
-    private static final long WAYPOINT_DWELL_MS = 10_000L;
+    // ── Acceptance thresholds — change these to adjust gate hit precision ─────
+    // Horizontal: how close (meters) the drone must get to count a gate
+    private static final double ACCEPTANCE_RADIUS_M   = 5.0;
+    // Vertical: how close (meters) in altitude before a gate counts
+    private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
 
     // ── Control loop timing ───────────────────────────────────────────────────
     private static final long  CONTROL_LOOP_INTERVAL_MS = 50;
     private static final float DT = CONTROL_LOOP_INTERVAL_MS / 1000.0f;
 
-    // ── Acceptance thresholds — change these to adjust waypoint precision ────
-    // Horizontal: how close (meters) the drone must get before a waypoint counts
-    private static final double ACCEPTANCE_RADIUS_M   = 1.0;
-    // Vertical: how close (meters) in altitude before a waypoint counts
-    private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
-
     // ── Speed limits ──────────────────────────────────────────────────────────
-    private static final float MIN_HORIZONTAL_SPEED = 0.3f;
+    private static final float MIN_HORIZONTAL_SPEED = 0.5f; // higher floor for time trial
     private static final float MAX_VERTICAL_SPEED   = 2.0f;
 
+    // ── Timing display update interval ────────────────────────────────────────
+    private static final long TIMING_UPDATE_INTERVAL_MS = 100;
+
     // ── Dependencies ─────────────────────────────────────────────────────────
-    private final WaypointStore   store;
-    private final TuningPanel     tuning;
-    private final MissionCallback callback;
-    private final Context         context;
+    private final TimeTrialWaypointStore store;
+    private final TimeTrialTuningPanel   tuning;
+    private final TimeTrialCallback      callback;
+    private final Context                context;
 
     // ── DJI ──────────────────────────────────────────────────────────────────
     private FlightController flightController;
@@ -94,43 +93,36 @@ public class WaypointMissionController {
     private int     currentWaypointIndex = 0;
     private double  previousDistance     = 0.0;
 
-    // ── Dwell state ───────────────────────────────────────────────────────────
-    private boolean isDwelling    = false;
-    private long    dwellEndTimeMs = 0L;
+    // ── GPS / attitude state ──────────────────────────────────────────────────
+    private double  currentLat        = 0.0;
+    private double  currentLng        = 0.0;
+    private float   currentAlt        = 0.0f;
+    private float   currentHeadingDeg = 0.0f;
+    private boolean hasValidGPS       = false;
 
-    // ── GPS state ─────────────────────────────────────────────────────────────
-    private double  currentLat     = 0.0;
-    private double  currentLng     = 0.0;
-    private float   currentAlt     = 0.0f;
-    private float   currentHeadingDeg = 0.0f; // yaw from FlightControllerState attitude
-    private boolean hasValidGPS    = false;
+    // ── Timing state ──────────────────────────────────────────────────────────
+    private long   missionStartTimeMs = 0L;
+    private long   lastSplitTimeMs    = 0L;
+    private long[] splitTimes;          // split duration in ms for each waypoint
+    private int    lastSplitWpNumber  = 0;
+    private String lastSplitLabel     = "—";
 
-    // ── Timer driving the control loop ────────────────────────────────────────
-    private Timer controlTimer;
-
-    // ── Main-thread handler ───────────────────────────────────────────────────
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // ── Timer and handler ─────────────────────────────────────────────────────
+    private Timer    controlTimer;
+    private final Handler mainHandler    = new Handler(Looper.getMainLooper());
+    private Runnable timingRunnable;
 
     // ── FlightLogger ──────────────────────────────────────────────────────────
     private FlightLogger flightLogger;
-
-    // ── Dwell countdown runnable ──────────────────────────────────────────────
-    private Runnable countdownRunnable;
 
     // =========================================================================
     // Constructor
     // =========================================================================
 
-    /**
-     * @param context  Application or Activity context (used for FlightLogger).
-     * @param store    Shared WaypointStore — read-only during mission.
-     * @param tuning   TuningPanel — parameter values read each control tick.
-     * @param callback MissionCallback implemented by VirtualStickWaypointView.
-     */
-    public WaypointMissionController(Context context,
-                                     WaypointStore store,
-                                     TuningPanel tuning,
-                                     MissionCallback callback) {
+    public TimeTrialMissionController(Context context,
+                                      TimeTrialWaypointStore store,
+                                      TimeTrialTuningPanel tuning,
+                                      TimeTrialCallback callback) {
         this.context  = context.getApplicationContext();
         this.store    = store;
         this.tuning   = tuning;
@@ -148,7 +140,7 @@ public class WaypointMissionController {
     public void initFlightController() {
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
             prepareOfflineDebugPosition();
-            callback.onStatusChanged("Mission: OFFLINE DEBUG");
+            callback.onStatusChanged("Time Trial: OFFLINE DEBUG");
             callback.onLogMessage("Offline debug mode — drone connection skipped.");
             return;
         }
@@ -176,10 +168,7 @@ public class WaypointMissionController {
         }
     }
 
-    /**
-     * Starts the waypoint mission. Validates preconditions, enables Virtual
-     * Stick mode, resets state, starts the 20Hz control loop.
-     */
+    /** Starts the time trial mission. */
     public void startMission() {
         if (store.size() < 1) {
             callback.onLogMessage("Add at least 1 waypoint.");
@@ -219,25 +208,22 @@ public class WaypointMissionController {
             callback.onLogMessage("Logging to: " + flightLogger.getLogFilePath());
 
             mainHandler.post(() -> {
-                callback.onStatusChanged("Mission: RUNNING");
+                callback.onStatusChanged("Time Trial: RUNNING");
                 callback.onMissionActiveChanged(true);
                 callback.onTargetLabelChanged(buildTargetLabel());
             });
 
-            callback.onLogMessage("Mission started. Flying to waypoint 1.");
+            callback.onLogMessage("Time trial started! Flying to gate 1.");
             startControlLoop();
+            startTimingUpdates();
         });
     }
 
-    /**
-     * Stops the mission immediately. Cancels any active dwell, sends a
-     * zero-velocity hover, disables Virtual Stick.
-     */
+    /** Stops the time trial immediately. */
     public void stopMission() {
         missionRunning = false;
-        isDwelling     = false;
-        cancelCountdown();
         stopControlLoop();
+        stopTimingUpdates();
 
         if (flightLogger != null) {
             flightLogger.stop();
@@ -258,24 +244,21 @@ public class WaypointMissionController {
         }
 
         mainHandler.post(() -> {
-            callback.onStatusChanged("Mission: STOPPED");
+            callback.onStatusChanged("Time Trial: STOPPED");
             callback.onMissionActiveChanged(false);
             callback.onTargetLabelChanged("Target: —");
+            callback.onTimingUpdated("--:--.--", lastSplitLabel);
         });
 
-        callback.onLogMessage("Mission stopped by user.");
+        callback.onLogMessage("Time trial stopped by user.");
     }
 
-    /**
-     * Detaches callbacks and cleans up resources.
-     * Call from VirtualStickWaypointView.onDetachedFromWindow().
-     */
+    /** Detaches callbacks and cleans up. Call from TimeTrialView.onDetachedFromWindow(). */
     public void onDetached() {
         if (missionRunning) {
             missionRunning = false;
-            isDwelling     = false;
-            cancelCountdown();
             stopControlLoop();
+            stopTimingUpdates();
             sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) flightLogger.stop();
         }
@@ -286,7 +269,7 @@ public class WaypointMissionController {
     }
 
     // =========================================================================
-    // Flight Controller State Callback  (~10 Hz)
+    // Flight Controller State Callback
     // =========================================================================
 
     private void onFlightControllerState(FlightControllerState state) {
@@ -305,7 +288,7 @@ public class WaypointMissionController {
         currentLat        = lat;
         currentLng        = lng;
         currentAlt        = alt;
-        currentHeadingDeg = (float) state.getAttitude().yaw; // degrees, -180 to +180
+        currentHeadingDeg = (float) state.getAttitude().yaw;
         hasValidGPS       = true;
 
         float vx = state.getVelocityX();
@@ -313,8 +296,7 @@ public class WaypointMissionController {
         float groundSpeed = (float) Math.sqrt(vx * vx + vy * vy);
 
         if (missionRunning) {
-            Log.d(TAG, String.format("speed=%.2f m/s  vx=%.2f  vy=%.2f  hdg=%.1f°",
-                    groundSpeed, vx, vy, currentHeadingDeg));
+            Log.d(TAG, String.format("speed=%.2f m/s  hdg=%.1f°", groundSpeed, currentHeadingDeg));
         }
 
         String posLabel   = String.format("Drone: (%.6f, %.6f)  alt: %.1fm", lat, lng, alt);
@@ -344,26 +326,15 @@ public class WaypointMissionController {
     /**
      * One iteration of the 20Hz control loop.
      *
-     * If isDwelling, only hover commands are sent.
-     * Otherwise: compute distance + bearing, run PD controller, send command.
+     * Key difference from WaypointMissionController: when a waypoint is
+     * accepted the drone does NOT stop. It records the split time and
+     * immediately advances the index — the next tick targets the new waypoint
+     * and the drone keeps flying at whatever speed it had.
      */
     private void runControlStep() {
         if (!missionRunning || !hasValidGPS) return;
         if (currentWaypointIndex >= store.size()) return;
 
-        // ── Dwell phase: hover until the timer fires ──────────────────────────
-        if (isDwelling) {
-            sendVelocityCommand(0, 0, 0f, 0);
-            if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
-                mainHandler.post(() -> callback.onTelemetryUpdated(
-                        String.format("Drone: offline sim (%.6f, %.6f)  alt: %.1fm",
-                                currentLat, currentLng, currentAlt),
-                        "Speed: 0.00 m/s"));
-            }
-            return;
-        }
-
-        // ── Normal navigation ─────────────────────────────────────────────────
         double[] target    = store.getWaypoint(currentWaypointIndex);
         double   targetLat = target[0];
         double   targetLng = target[1];
@@ -373,31 +344,53 @@ public class WaypointMissionController {
                 currentLat, currentLng, targetLat, targetLng);
         float altError = targetAlt - currentAlt;
 
-        Log.d(TAG, String.format("WP%d dist=%.2fm altErr=%.2fm lat=%.6f lng=%.6f",
-                currentWaypointIndex + 1, distanceM, altError, currentLat, currentLng));
+        Log.d(TAG, String.format("Gate%d dist=%.2fm altErr=%.2fm",
+                currentWaypointIndex + 1, distanceM, altError));
 
         if (flightLogger != null) flightLogger.log(currentLat, currentLng, true);
 
-        // ── Waypoint acceptance ───────────────────────────────────────────────
+        // ── Gate acceptance — NO DWELL, just record split and advance ─────────
         boolean horizontalReached = distanceM <= ACCEPTANCE_RADIUS_M;
         boolean verticalReached   = Math.abs(altError) <= ALTITUDE_ACCEPTANCE_M;
 
         if (horizontalReached && verticalReached) {
-            enterDwell();
-            return;
+            recordSplit(currentWaypointIndex + 1);
+            currentWaypointIndex++;
+            previousDistance = 0.0; // reset D term derivative for new leg
+
+            if (currentWaypointIndex >= store.size()) {
+                // All gates complete
+                finishRun();
+                return;
+            }
+
+            final int nextGate = currentWaypointIndex + 1;
+            mainHandler.post(() -> {
+                callback.onTargetLabelChanged(buildTargetLabel());
+                callback.onLogMessage("Gate passed! Flying to gate " + nextGate + ".");
+            });
+            // Fall through — compute velocity toward new target immediately
         }
 
+        // ── Re-read target in case index just advanced ────────────────────────
+        if (currentWaypointIndex >= store.size()) return;
+        target    = store.getWaypoint(currentWaypointIndex);
+        targetLat = target[0];
+        targetLng = target[1];
+        targetAlt = (float) target[2];
+
+        distanceM = WaypointNavigationMath.haversineDistance(
+                currentLat, currentLng, targetLat, targetLng);
+        altError = targetAlt - currentAlt;
+
         // ── Feedforward + PD horizontal speed controller ──────────────────────
-        float maxSpeed     = tuning.getMaxHorizontalSpeed();
-        float deceleration = tuning.getDeceleration();
-        float brakingDist  = tuning.getBrakingDistanceM();
+        float maxSpeed    = tuning.getMaxHorizontalSpeed();
+        float brakingDist = tuning.getBrakingDistanceM();
 
         float horizontalSpeed;
         if (distanceM > brakingDist) {
-            // PHASE 1 — CRUISE: full speed
             horizontalSpeed = maxSpeed;
         } else {
-            // PHASE 2 — BRAKING: PD controller
             double distanceRate = (distanceM - previousDistance) / DT;
             horizontalSpeed = (float)(tuning.getKpHorizontal() * distanceM
                     - tuning.getKdHorizontal() * distanceRate);
@@ -413,14 +406,12 @@ public class WaypointMissionController {
         float  northVelocity = (float)(horizontalSpeed * Math.cos(bearingRad));
         float  eastVelocity  = (float)(horizontalSpeed * Math.sin(bearingRad));
 
-        // DJI GROUND + VELOCITY: pitch = east, roll = north
         float pitchVelocity    = eastVelocity;
         float rollVelocity     = northVelocity;
         float verticalVelocity = tuning.getKpVertical() * altError;
         verticalVelocity = Math.max(-MAX_VERTICAL_SPEED,
                 Math.min(MAX_VERTICAL_SPEED, verticalVelocity));
 
-        // ── Yaw rate — rotate drone nose toward current waypoint bearing ──────
         float yawRate = computeYawRate(Math.toDegrees(bearingRad));
 
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
@@ -431,105 +422,135 @@ public class WaypointMissionController {
     }
 
     // =========================================================================
-    // Dwell Logic
+    // Timing
     // =========================================================================
 
     /**
-     * Called when the drone first enters the acceptance radius of a waypoint.
-     * Stops the drone, marks dwell active, starts the per-second countdown.
+     * Records a split time when a gate is passed.
+     * Split = elapsed time since the last gate (or mission start for WP1).
      */
-    private void enterDwell() {
-        isDwelling     = true;
-        dwellEndTimeMs = System.currentTimeMillis() + WAYPOINT_DWELL_MS;
-        sendVelocityCommand(0, 0, 0f, 0);
+    private void recordSplit(int wpNumber) {
+        long now      = System.currentTimeMillis();
+        long splitMs  = now - lastSplitTimeMs;
+        long totalMs  = now - missionStartTimeMs;
+        lastSplitTimeMs = now;
 
-        final int wpNumber = currentWaypointIndex + 1;
-        callback.onLogMessage(String.format(
-                "Waypoint %d reached! Dwelling for %.0f seconds.",
-                wpNumber, WAYPOINT_DWELL_MS / 1000.0));
+        if (wpNumber >= 1 && wpNumber <= splitTimes.length) {
+            splitTimes[wpNumber - 1] = splitMs;
+        }
 
-        previousDistance = 0.0; // reset D term for the next leg
+        String splitStr = formatTime(splitMs);
+        String totalStr = formatTime(totalMs);
+        lastSplitLabel  = "Gate " + wpNumber + ": " + splitStr;
+        lastSplitWpNumber = wpNumber;
 
-        startCountdown(wpNumber);
-
-        // Schedule end of dwell
-        mainHandler.postDelayed(this::exitDwell, WAYPOINT_DWELL_MS);
+        mainHandler.post(() -> {
+            callback.onSplitRecorded(wpNumber, splitStr, totalStr);
+            callback.onLogMessage(String.format(
+                    "Gate %d — split: %s  total: %s", wpNumber, splitStr, totalStr));
+        });
     }
 
-    /**
-     * Updates the status label with a countdown once per second during dwell.
-     */
-    private void startCountdown(int wpNumber) {
-        cancelCountdown();
-        countdownRunnable = new Runnable() {
+    /** Starts the 100ms timing update runnable. */
+    private void startTimingUpdates() {
+        stopTimingUpdates();
+        timingRunnable = new Runnable() {
             @Override
             public void run() {
-                if (!isDwelling) return;
-                long remainingMs  = dwellEndTimeMs - System.currentTimeMillis();
-                long remainingSec = Math.max(0, (remainingMs + 999) / 1000);
-                callback.onStatusChanged(String.format(
-                        "Mission: DWELLING - WP%d (%ds remaining)",
-                        wpNumber, remainingSec));
-                if (remainingSec > 0) {
-                    mainHandler.postDelayed(this, 1000);
-                }
+                if (!missionRunning) return;
+                long elapsed = System.currentTimeMillis() - missionStartTimeMs;
+                callback.onTimingUpdated(formatTime(elapsed), lastSplitLabel);
+                mainHandler.postDelayed(this, TIMING_UPDATE_INTERVAL_MS);
             }
         };
-        mainHandler.post(countdownRunnable);
+        mainHandler.post(timingRunnable);
     }
 
-    private void cancelCountdown() {
-        if (countdownRunnable != null) {
-            mainHandler.removeCallbacks(countdownRunnable);
-            countdownRunnable = null;
+    private void stopTimingUpdates() {
+        if (timingRunnable != null) {
+            mainHandler.removeCallbacks(timingRunnable);
+            timingRunnable = null;
         }
     }
 
     /**
-     * Called after WAYPOINT_DWELL_MS has elapsed.
-     * Advances the waypoint index or triggers RTH if all waypoints are done.
+     * Formats a duration in milliseconds as MM:SS.d (tenths of seconds).
+     * Examples: 6100ms → "00:06.1",  74300ms → "01:14.3"
      */
-    private void exitDwell() {
-        if (!missionRunning) return;
-        isDwelling = false;
-        cancelCountdown();
+    static String formatTime(long ms) {
+        long totalTenths = ms / 100;
+        long tenths      = totalTenths % 10;
+        long totalSecs   = ms / 1000;
+        long secs        = totalSecs % 60;
+        long mins        = totalSecs / 60;
+        return String.format(Locale.US, "%02d:%02d.%d", mins, secs, tenths);
+    }
 
-        currentWaypointIndex++;
+    // =========================================================================
+    // Run completion
+    // =========================================================================
 
-        if (currentWaypointIndex >= store.size()) {
-            callback.onLogMessage("All waypoints complete. Initiating RTH.");
-            missionRunning = false;
-            stopControlLoop();
-            sendVelocityCommand(0, 0, 0f, 0);
-            if (flightLogger != null) {
-                flightLogger.stop();
-                callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
+    private void finishRun() {
+        missionRunning = false;
+        stopControlLoop();
+        stopTimingUpdates();
+
+        long totalMs = System.currentTimeMillis() - missionStartTimeMs;
+        String totalStr = formatTime(totalMs);
+
+        if (flightLogger != null) {
+            flightLogger.stop();
+            callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
+        }
+
+        sendVelocityCommand(0, 0, 0f, 0);
+
+        // Build summary log
+        StringBuilder summary = new StringBuilder();
+        summary.append("── Time Trial Complete ──\n");
+        summary.append("Total time: ").append(totalStr).append("\n");
+        for (int i = 0; i < store.size(); i++) {
+            if (i < splitTimes.length && splitTimes[i] > 0) {
+                summary.append(String.format("  Gate %d split: %s\n",
+                        i + 1, formatTime(splitTimes[i])));
             }
-            if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
-                finishOfflineDebugMission();
-                return;
-            }
-            triggerRTH();
+        }
+
+        final String summaryStr = summary.toString();
+        mainHandler.post(() -> {
+            callback.onLogMessage(summaryStr);
+            callback.onStatusChanged("Time Trial: COMPLETE — " + totalStr);
+            callback.onTimingUpdated(totalStr, lastSplitLabel);
+            callback.onMissionActiveChanged(false);
+            callback.onTargetLabelChanged("Target: —");
+        });
+
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            finishOfflineDebugMission(totalStr);
             return;
         }
 
-        callback.onStatusChanged("Mission: RUNNING");
-        callback.onTargetLabelChanged(buildTargetLabel());
-        callback.onLogMessage("Flying to waypoint " + (currentWaypointIndex + 1) + ".");
+        triggerRTH();
+    }
+
+    // =========================================================================
+    // Yaw Control
+    // =========================================================================
+
+    private float computeYawRate(double targetHeadingDeg) {
+        final float YAW_DEADBAND_DEG = 5.0f;
+        double headingError = WaypointNavigationMath.normalizeHeadingError(
+                targetHeadingDeg - currentHeadingDeg);
+        if (Math.abs(headingError) <= YAW_DEADBAND_DEG) return 0f;
+        float yawRate = (float)(tuning.getKpYaw() * headingError);
+        float maxRate = tuning.getMaxYawRate();
+        return Math.max(-maxRate, Math.min(maxRate, yawRate));
     }
 
     // =========================================================================
     // Virtual Stick Command
     // =========================================================================
 
-    /**
-     * Sends a FlightControlData packet to the drone.
-     *
-     * @param pitch    East velocity   (m/s)   — positive = fly East
-     * @param roll     North velocity  (m/s)   — positive = fly North
-     * @param yaw      Yaw rate        (deg/s) — positive = rotate clockwise
-     * @param vertical Climb rate      (m/s)   — positive = climb
-     */
     private void sendVelocityCommand(float pitch, float roll, float yaw, float vertical) {
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) return;
         if (flightController == null) return;
@@ -543,38 +564,6 @@ public class WaypointMissionController {
     }
 
     // =========================================================================
-    // Yaw Control
-    // =========================================================================
-
-    /**
-     * Computes a yaw rate command (degrees/second) to rotate the drone nose
-     * toward the given target heading.
-     *
-     * Uses a P controller with a deadband to prevent jitter from GPS noise:
-     *   - If |headingError| <= YAW_DEADBAND_DEG → return 0 (no rotation needed)
-     *   - Otherwise → yawRate = Kp_YAW * headingError, clamped to ±maxYawRate
-     *
-     * The heading error is normalized to [-180, +180] so the drone always
-     * takes the shortest rotational path.
-     *
-     * @param targetHeadingDeg Target heading in degrees (0 = North, 90 = East).
-     * @return Yaw rate in degrees/second. Positive = clockwise rotation.
-     */
-    private float computeYawRate(double targetHeadingDeg) {
-        // Deadband — ignore small errors caused by GPS position noise
-        final float YAW_DEADBAND_DEG = 5.0f;
-
-        double headingError = WaypointNavigationMath.normalizeHeadingError(
-                targetHeadingDeg - currentHeadingDeg);
-
-        if (Math.abs(headingError) <= YAW_DEADBAND_DEG) return 0f;
-
-        float yawRate = (float)(tuning.getKpYaw() * headingError);
-        float maxRate = tuning.getMaxYawRate();
-        return Math.max(-maxRate, Math.min(maxRate, yawRate));
-    }
-
-    // =========================================================================
     // Return to Home
     // =========================================================================
 
@@ -585,8 +574,7 @@ public class WaypointMissionController {
                     if (rthError == null) {
                         mainHandler.post(() -> {
                             callback.onLogMessage("RTH initiated successfully.");
-                            callback.onStatusChanged("Mission: RTH");
-                            callback.onMissionActiveChanged(false);
+                            callback.onStatusChanged("Time Trial: RTH");
                         });
                     } else {
                         callback.onLogMessage("RTH failed: " + rthError.getDescription());
@@ -598,9 +586,6 @@ public class WaypointMissionController {
     // Offline Debug Simulation
     // =========================================================================
 
-    /**
-     * Sets the simulated drone position to 20m south-west of the first waypoint.
-     */
     private void prepareOfflineDebugPosition() {
         if (store.isEmpty()) {
             currentLat = 34.048510;
@@ -627,36 +612,28 @@ public class WaypointMissionController {
         missionRunning = true;
 
         mainHandler.post(() -> {
-            callback.onStatusChanged("Mission: OFFLINE SIM");
+            callback.onStatusChanged("Time Trial: OFFLINE SIM");
             callback.onMissionActiveChanged(true);
             callback.onTargetLabelChanged(buildTargetLabel());
         });
 
-        callback.onLogMessage("Offline debug mission started.");
+        callback.onLogMessage("Offline time trial started.");
         startControlLoop();
+        startTimingUpdates();
     }
 
-    private void finishOfflineDebugMission() {
+    private void finishOfflineDebugMission(String totalTime) {
         mainHandler.post(() -> {
-            callback.onLogMessage("Offline debug mission complete.");
-            callback.onStatusChanged("Mission: OFFLINE COMPLETE");
+            callback.onLogMessage("Offline time trial complete. Total: " + totalTime);
+            callback.onStatusChanged("Time Trial: OFFLINE COMPLETE — " + totalTime);
             callback.onMissionActiveChanged(false);
             callback.onTargetLabelChanged("Target: —");
-            callback.onTelemetryUpdated(
-                    String.format("Drone: offline sim (%.6f, %.6f)  alt: %.1fm",
-                            currentLat, currentLng, currentAlt),
-                    "Speed: 0.00 m/s");
         });
     }
 
-    /**
-     * Moves the simulated drone position by integrating velocity over DT.
-     * Called instead of sendVelocityCommand() in offline debug mode.
-     */
     private void applyOfflineDebugVelocity(float pitchVelocity,
                                            float rollVelocity,
                                            float verticalVelocity) {
-        // pitch = east, roll = north in DJI GROUND mode
         double northMeters = rollVelocity  * DT;
         double eastMeters  = pitchVelocity * DT;
 
@@ -681,14 +658,17 @@ public class WaypointMissionController {
     private void resetMissionState() {
         currentWaypointIndex = 0;
         previousDistance     = 0.0;
-        isDwelling           = false;
-        cancelCountdown();
+        missionStartTimeMs   = System.currentTimeMillis();
+        lastSplitTimeMs      = missionStartTimeMs;
+        lastSplitLabel       = "—";
+        lastSplitWpNumber    = 0;
+        splitTimes           = new long[store.size()];
     }
 
     private String buildTargetLabel() {
         if (currentWaypointIndex < store.size()) {
             double[] wp = store.getWaypoint(currentWaypointIndex);
-            return String.format("Target WP%d: (%.6f, %.6f) @ %.1fm",
+            return String.format("Gate %d: (%.6f, %.6f) @ %.1fm",
                     currentWaypointIndex + 1, wp[0], wp[1], wp[2]);
         }
         return "Target: —";
