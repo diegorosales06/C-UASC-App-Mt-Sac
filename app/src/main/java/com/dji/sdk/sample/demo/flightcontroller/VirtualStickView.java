@@ -2,6 +2,9 @@ package com.dji.sdk.sample.demo.flightcontroller;
 
 import android.app.Service;
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
@@ -25,6 +28,8 @@ import java.util.Timer;
 import java.util.TimerTask;
 
 import dji.common.error.DJIError;
+import dji.common.flightcontroller.FlightControllerState;
+import dji.common.flightcontroller.LocationCoordinate3D;
 import dji.common.flightcontroller.simulator.InitializationData;
 import dji.common.flightcontroller.simulator.SimulatorState;
 import dji.common.flightcontroller.virtualstick.FlightControlData;
@@ -44,6 +49,8 @@ import dji.sdk.flightcontroller.Simulator;
  * Class for virtual stick.
  */
 public class VirtualStickView extends RelativeLayout implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, PresentableView {
+    private static final String TAG = VirtualStickView.class.getSimpleName();
+
     private Button btnEnableVirtualStick;
     private Button btnDisableVirtualStick;
     private Button btnHorizontalCoordinate;
@@ -68,6 +75,8 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
     private boolean isSimulatorActived = false;
     private FlightController flightController = null;
     private Simulator simulator = null;
+    private FlightControllerState latestFlightControllerState = null;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public VirtualStickView(Context context) {
         super(context);
@@ -161,6 +170,13 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
     }
 
     private void setUpListeners() {
+        if (flightController == null) {
+            flightController = ModuleVerificationUtil.getFlightController();
+        }
+        if (flightController != null) {
+            flightController.setStateCallback(state -> latestFlightControllerState = state);
+        }
+
         if (simulator != null) {
             simulator.setStateCallback(new SimulatorState.Callback() {
                 @Override
@@ -239,6 +255,9 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
         if (simulator != null) {
             simulator.setStateCallback(null);
         }
+        if (flightController != null) {
+            flightController.setStateCallback(null);
+        }
         screenJoystickLeft.setJoystickListener(null);
         screenJoystickRight.setJoystickListener(null);
     }
@@ -249,12 +268,14 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
         if (flightController == null) {
             return;
         }
+        this.flightController = flightController;
         switch (v.getId()) {
             case R.id.btn_enable_virtual_stick:
                 flightController.setVirtualStickModeEnabled(true, new CommonCallbacks.CompletionCallback() {
                     @Override
                     public void onResult(DJIError djiError) {
                         flightController.setVirtualStickAdvancedModeEnabled(true);
+                        DialogUtils.logResult(TAG, "Enable Virtual Stick", djiError);
                         DialogUtils.showDialogBasedOnError(getContext(), djiError);
                     }
                 });
@@ -264,6 +285,7 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
                 flightController.setVirtualStickModeEnabled(false, new CommonCallbacks.CompletionCallback() {
                     @Override
                     public void onResult(DJIError djiError) {
+                        DialogUtils.logResult(TAG, "Disable Virtual Stick", djiError);
                         DialogUtils.showDialogBasedOnError(getContext(), djiError);
                     }
                 });
@@ -302,16 +324,73 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
                 ToastUtils.setResultToToast(flightController.getRollPitchCoordinateSystem().name());
                 break;
             case R.id.btn_take_off:
+                Log.i(TAG, "Takeoff requested. " + buildFlightStateSummary("before", flightController.getState()));
                 flightController.startTakeoff(new CommonCallbacks.CompletionCallback() {
                     @Override
                     public void onResult(DJIError djiError) {
-                        DialogUtils.showDialogBasedOnError(getContext(), djiError);
+                        DialogUtils.logResult(TAG, "Start takeoff", djiError);
+                        if (djiError != null) {
+                            DialogUtils.showDialogBasedOnError(getContext(), djiError);
+                            return;
+                        }
+
+                        DialogUtils.showDialog(getContext(),
+                                "Takeoff command accepted. Checking aircraft state...");
+                        scheduleTakeoffStateCheck(flightController, 3000);
+                        scheduleTakeoffStateCheck(flightController, 8000);
                     }
                 });
                 break;
             default:
                 break;
         }
+    }
+
+    private void scheduleTakeoffStateCheck(FlightController controller, long delayMs) {
+        mainHandler.postDelayed(() -> {
+            FlightControllerState state = controller.getState();
+            if (state == null) {
+                state = latestFlightControllerState;
+            }
+
+            String summary = buildFlightStateSummary(delayMs + "ms after takeoff", state);
+            Log.i(TAG, summary);
+
+            if (state == null || (!state.isFlying() && !state.areMotorsOn())) {
+                DialogUtils.showDialog(getContext(),
+                        "Takeoff was accepted, but the aircraft is not reporting flying/motors-on.\n\n"
+                                + summary
+                                + "\n\nCheck activation/binding, GPS/home point, flight mode switch, GEO/flysafe status, and whether another DJI app has control.");
+            }
+        }, delayMs);
+    }
+
+    private String buildFlightStateSummary(String label, FlightControllerState state) {
+        if (state == null) {
+            return "Flight state (" + label + "): unavailable";
+        }
+
+        LocationCoordinate3D location = state.getAircraftLocation();
+        String locationText = "unknown";
+        if (location != null) {
+            locationText = String.format("%.6f, %.6f, %.1fm",
+                    location.getLatitude(),
+                    location.getLongitude(),
+                    location.getAltitude());
+        }
+
+        return "Flight state (" + label + "):"
+                + "\nmode=" + state.getFlightMode()
+                + "\nmodeString=" + state.getFlightModeString()
+                + "\nflying=" + state.isFlying()
+                + "\nmotorsOn=" + state.areMotorsOn()
+                + "\nhomeSet=" + state.isHomeLocationSet()
+                + "\ngpsLevel=" + state.getGPSSignalLevel()
+                + "\nsatellites=" + state.getSatelliteCount()
+                + "\nimuPreheating=" + state.isIMUPreheating()
+                + "\nlocation=" + locationText
+                + "\nvirtualStickAvailable=" + (flightController != null
+                        && flightController.isVirtualStickControlModeAvailable());
     }
 
     @Override
