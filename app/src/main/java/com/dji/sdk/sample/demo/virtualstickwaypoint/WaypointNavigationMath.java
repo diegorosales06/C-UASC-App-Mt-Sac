@@ -103,6 +103,24 @@ public final class WaypointNavigationMath {
         return (Math.atan2(y, x) + 2 * Math.PI) % (2 * Math.PI);
     }
 
+    // ── Yaw / heading helpers ─────────────────────────────────────────────────
+
+    /**
+     * Normalizes a raw heading error (targetDeg - currentDeg) to the shortest
+     * angular path in the range [-180, +180] degrees.
+     *
+     * Without normalization a drone at 350° targeting 10° would compute an error
+     * of -340° and spin the long way around. This returns +20° instead.
+     *
+     * @param errorDeg Raw heading error in degrees (target - current), any range.
+     * @return Equivalent error in [-180, +180] degrees.
+     */
+    public static double normalizeHeadingError(double errorDeg) {
+        while (errorDeg >  180.0) errorDeg -= 360.0;
+        while (errorDeg < -180.0) errorDeg += 360.0;
+        return errorDeg;
+    }
+
     // ── Coordinate conversion helpers (used by offline debug simulator) ───────
 
     /**

@@ -237,17 +237,11 @@ public class MainContent extends RelativeLayout {
                 }
             }
         });
-
-        ((TextView) findViewById(R.id.text_version)).setText(
-                getResources().getString(R.string.sdk_version,
-                        DJISDKManager.getInstance().getRegistrationSDKVersion()
-                                + " Debug:" + GlobalConfig.DEBUG));
-
-        // ── Offline debug bypass ───────────────────────────────────────────────
-        // When OFFLINE_DEBUG_MODE = true, refreshSDKRelativeUI() enables the Open
-        // button immediately without waiting for a connectivity event from the SDK.
-        // This is needed because on first launch with no drone, no ConnectivityChangeEvent
-        // fires, so the button would otherwise stay disabled indefinitely.
+        ((TextView) findViewById(R.id.text_version)).setText(getResources().getString(R.string.sdk_version,
+                DJISDKManager.getInstance().getRegistrationSDKVersion()
+                        + " Debug:"
+                        + GlobalConfig.DEBUG));
+        // Immediately apply offline debug state so Open is enabled on first load
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
             refreshSDKRelativeUI();
         }
@@ -668,4 +662,5 @@ public class MainContent extends RelativeLayout {
     private void notifyStatusChange() {
         DJISampleApplication.getEventBus().post(new MainActivity.ConnectivityChangeEvent());
     }
+    //endregion
 }

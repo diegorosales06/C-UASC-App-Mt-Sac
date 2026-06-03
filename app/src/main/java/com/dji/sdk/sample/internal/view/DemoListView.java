@@ -70,6 +70,7 @@ import com.squareup.otto.Subscribe;
 import com.dji.sdk.sample.demo.geofencing.GeofencingView;
 import com.dji.sdk.sample.demo.waypoint.WaypointMissionView;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.VirtualStickWaypointView;
+import com.dji.sdk.sample.demo.timetrial.TimeTrialView;
 import com.dji.sdk.sample.demo.drop.PayloadDropMissionView;
 import com.dji.sdk.sample.demo.LEDcontrol.LEDControlView;
 
@@ -212,11 +213,12 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.map_tracking_title, MapTrackingView.class),
                 new GroupItem(R.string.waypoint_mission_title, WaypointMissionView.class),
                 new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class),
+                new GroupItem(R.string.time_trial_mission_title, TimeTrialView.class),
 
                 new GroupItem(R.string.payload_drop_mission_title, PayloadDropMissionView.class),
                 new GroupItem(R.string.LED_Control_title, LEDControlView.class)
 
-                );
+        );
 
 
         builder.addGroup(R.string.component_listview_remote_controller,

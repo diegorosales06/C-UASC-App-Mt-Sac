@@ -70,6 +70,18 @@ public class WaypointMissionController {
     private static final long  CONTROL_LOOP_INTERVAL_MS = 50;
     private static final float DT = CONTROL_LOOP_INTERVAL_MS / 1000.0f;
 
+    // ── Acceptance thresholds — change these to adjust waypoint precision ────
+    // Horizontal: how close (meters) the drone must get before a waypoint counts
+    private static final double ACCEPTANCE_RADIUS_M   = 1.0;
+    // Vertical: how close (meters) in altitude before a waypoint counts
+    private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
+
+    // ── Takeoff ───────────────────────────────────────────────────────────────
+    // Minimum altitude (meters) the drone must reach after takeoff before the
+    // waypoint mission control loop begins. Change this if your takeoff hover
+    // height differs or you want to wait for a higher stable altitude.
+    private static final float TAKEOFF_STABLE_ALT_M = 1.0f;
+
     // ── Speed limits ──────────────────────────────────────────────────────────
     private static final float MIN_HORIZONTAL_SPEED = 0.3f;
     private static final float MAX_VERTICAL_SPEED   = 2.0f;
@@ -85,6 +97,7 @@ public class WaypointMissionController {
 
     // ── Mission state ─────────────────────────────────────────────────────────
     private boolean missionRunning       = false;
+    private boolean isTakingOff         = false; // true while waiting for stable hover
     private int     currentWaypointIndex = 0;
     private double  previousDistance     = 0.0;
 
@@ -93,10 +106,11 @@ public class WaypointMissionController {
     private long    dwellEndTimeMs = 0L;
 
     // ── GPS state ─────────────────────────────────────────────────────────────
-    private double  currentLat  = 0.0;
-    private double  currentLng  = 0.0;
-    private float   currentAlt  = 0.0f;
-    private boolean hasValidGPS = false;
+    private double  currentLat     = 0.0;
+    private double  currentLng     = 0.0;
+    private float   currentAlt     = 0.0f;
+    private float   currentHeadingDeg = 0.0f; // yaw from FlightControllerState attitude
+    private boolean hasValidGPS    = false;
 
     // ── Timer driving the control loop ────────────────────────────────────────
     private Timer controlTimer;
@@ -170,8 +184,16 @@ public class WaypointMissionController {
     }
 
     /**
-     * Starts the waypoint mission. Validates preconditions, enables Virtual
-     * Stick mode, resets state, starts the 20Hz control loop.
+     * Starts the waypoint mission.
+     *
+     * If the drone is already airborne (isFlying == true) it skips takeoff and
+     * enables Virtual Stick immediately — same behavior as before.
+     *
+     * If the drone is on the ground it calls startTakeoff() first, then polls
+     * currentAlt on every flight controller state callback until the drone
+     * reaches TAKEOFF_STABLE_ALT_M. At that point Virtual Stick is enabled and
+     * the control loop starts with the vertical P controller handling the climb
+     * to waypoint altitude.
      */
     public void startMission() {
         if (store.size() < 1) {
@@ -197,12 +219,59 @@ public class WaypointMissionController {
             return;
         }
 
+        // ── Already airborne — skip takeoff, go straight to mission ───────────
+        if (flightController.getState() != null
+                && flightController.getState().isFlying()) {
+            callback.onLogMessage("Drone already airborne — skipping takeoff.");
+            enableVirtualStickAndBegin();
+            return;
+        }
+
+        // ── On the ground — trigger takeoff then wait for stable hover ────────
+        callback.onLogMessage("Drone on ground — initiating takeoff.");
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Mission: TAKING OFF");
+            callback.onMissionActiveChanged(true);
+        });
+
+        isTakingOff = true;
+
+        flightController.startTakeoff(error -> {
+            if (error != null) {
+                isTakingOff = false;
+                mainHandler.post(() -> {
+                    callback.onLogMessage("Takeoff failed: " + error.getDescription());
+                    callback.onStatusChanged("Mission: IDLE");
+                    callback.onMissionActiveChanged(false);
+                });
+                return;
+            }
+            // Takeoff command accepted. The flight controller state callback will
+            // now poll currentAlt and call enableVirtualStickAndBegin() once the
+            // drone reaches TAKEOFF_STABLE_ALT_M.
+            callback.onLogMessage("Takeoff command accepted. Climbing...");
+        });
+    }
+
+    /**
+     * Called either directly (drone already flying) or from the altitude poll
+     * in onFlightControllerState (drone just reached stable hover height).
+     * Enables Virtual Stick mode and starts the control loop.
+     */
+    private void enableVirtualStickAndBegin() {
+        isTakingOff = false;
+
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) {
                 callback.onLogMessage("Failed to enable Virtual Stick: "
                         + error.getDescription());
+                mainHandler.post(() -> {
+                    callback.onStatusChanged("Mission: IDLE");
+                    callback.onMissionActiveChanged(false);
+                });
                 return;
             }
+
             callback.onLogMessage("Virtual Stick mode enabled.");
             resetMissionState();
             missionRunning = true;
@@ -228,6 +297,7 @@ public class WaypointMissionController {
      */
     public void stopMission() {
         missionRunning = false;
+        isTakingOff    = false;
         isDwelling     = false;
         cancelCountdown();
         stopControlLoop();
@@ -237,7 +307,7 @@ public class WaypointMissionController {
             callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
         }
 
-        sendVelocityCommand(0, 0, 0);
+        sendVelocityCommand(0, 0, 0f, 0);
 
         if (flightController != null) {
             flightController.setVirtualStickModeEnabled(false, error -> {
@@ -264,12 +334,13 @@ public class WaypointMissionController {
      * Call from VirtualStickWaypointView.onDetachedFromWindow().
      */
     public void onDetached() {
-        if (missionRunning) {
+        if (missionRunning || isTakingOff) {
             missionRunning = false;
+            isTakingOff    = false;
             isDwelling     = false;
             cancelCountdown();
             stopControlLoop();
-            sendVelocityCommand(0, 0, 0);
+            sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) flightLogger.stop();
         }
         if (flightController != null) {
@@ -295,18 +366,32 @@ public class WaypointMissionController {
             return;
         }
 
-        currentLat  = lat;
-        currentLng  = lng;
-        currentAlt  = alt;
-        hasValidGPS = true;
+        currentLat        = lat;
+        currentLng        = lng;
+        currentAlt        = alt;
+        currentHeadingDeg = (float) state.getAttitude().yaw; // degrees, -180 to +180
+        hasValidGPS       = true;
+
+        // ── Takeoff altitude poll ─────────────────────────────────────────────
+        // While isTakingOff is true we wait for the drone to reach
+        // TAKEOFF_STABLE_ALT_M. Once it does, kick off the mission.
+        // isFlying() guards against triggering on a brief GPS altitude spike
+        // before the motors have even spun up.
+        if (isTakingOff && state.isFlying() && currentAlt >= TAKEOFF_STABLE_ALT_M) {
+            isTakingOff = false;
+            callback.onLogMessage(String.format(
+                    "Stable hover reached (%.1fm). Starting mission.", currentAlt));
+            mainHandler.post(() -> callback.onStatusChanged("Mission: STABILIZED"));
+            enableVirtualStickAndBegin();
+        }
 
         float vx = state.getVelocityX();
         float vy = state.getVelocityY();
         float groundSpeed = (float) Math.sqrt(vx * vx + vy * vy);
 
         if (missionRunning) {
-            Log.d(TAG, String.format("speed=%.2f m/s  vx=%.2f  vy=%.2f",
-                    groundSpeed, vx, vy));
+            Log.d(TAG, String.format("speed=%.2f m/s  vx=%.2f  vy=%.2f  hdg=%.1f°",
+                    groundSpeed, vx, vy, currentHeadingDeg));
         }
 
         String posLabel   = String.format("Drone: (%.6f, %.6f)  alt: %.1fm", lat, lng, alt);
@@ -345,7 +430,7 @@ public class WaypointMissionController {
 
         // ── Dwell phase: hover until the timer fires ──────────────────────────
         if (isDwelling) {
-            sendVelocityCommand(0, 0, 0);
+            sendVelocityCommand(0, 0, 0f, 0);
             if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
                 mainHandler.post(() -> callback.onTelemetryUpdated(
                         String.format("Drone: offline sim (%.6f, %.6f)  alt: %.1fm",
@@ -371,10 +456,8 @@ public class WaypointMissionController {
         if (flightLogger != null) flightLogger.log(currentLat, currentLng, true);
 
         // ── Waypoint acceptance ───────────────────────────────────────────────
-        boolean horizontalReached =
-                distanceM <= WaypointNavigationMath.ACCEPTANCE_RADIUS_M;
-        boolean verticalReached   =
-                Math.abs(altError) <= WaypointNavigationMath.ALTITUDE_ACCEPTANCE_M;
+        boolean horizontalReached = distanceM <= ACCEPTANCE_RADIUS_M;
+        boolean verticalReached   = Math.abs(altError) <= ALTITUDE_ACCEPTANCE_M;
 
         if (horizontalReached && verticalReached) {
             enterDwell();
@@ -414,10 +497,13 @@ public class WaypointMissionController {
         verticalVelocity = Math.max(-MAX_VERTICAL_SPEED,
                 Math.min(MAX_VERTICAL_SPEED, verticalVelocity));
 
+        // ── Yaw rate — rotate drone nose toward current waypoint bearing ──────
+        float yawRate = computeYawRate(Math.toDegrees(bearingRad));
+
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
             applyOfflineDebugVelocity(pitchVelocity, rollVelocity, verticalVelocity);
         } else {
-            sendVelocityCommand(pitchVelocity, rollVelocity, verticalVelocity);
+            sendVelocityCommand(pitchVelocity, rollVelocity, yawRate, verticalVelocity);
         }
     }
 
@@ -432,7 +518,7 @@ public class WaypointMissionController {
     private void enterDwell() {
         isDwelling     = true;
         dwellEndTimeMs = System.currentTimeMillis() + WAYPOINT_DWELL_MS;
-        sendVelocityCommand(0, 0, 0);
+        sendVelocityCommand(0, 0, 0f, 0);
 
         final int wpNumber = currentWaypointIndex + 1;
         callback.onLogMessage(String.format(
@@ -491,7 +577,7 @@ public class WaypointMissionController {
             callback.onLogMessage("All waypoints complete. Initiating RTH.");
             missionRunning = false;
             stopControlLoop();
-            sendVelocityCommand(0, 0, 0);
+            sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) {
                 flightLogger.stop();
                 callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
@@ -516,20 +602,53 @@ public class WaypointMissionController {
     /**
      * Sends a FlightControlData packet to the drone.
      *
-     * @param pitch    East velocity  (m/s) — positive = fly East
-     * @param roll     North velocity (m/s) — positive = fly North
-     * @param vertical Climb rate     (m/s) — positive = climb
+     * @param pitch    East velocity   (m/s)   — positive = fly East
+     * @param roll     North velocity  (m/s)   — positive = fly North
+     * @param yaw      Yaw rate        (deg/s) — positive = rotate clockwise
+     * @param vertical Climb rate      (m/s)   — positive = climb
      */
-    private void sendVelocityCommand(float pitch, float roll, float vertical) {
+    private void sendVelocityCommand(float pitch, float roll, float yaw, float vertical) {
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) return;
         if (flightController == null) return;
 
-        FlightControlData data = new FlightControlData(pitch, roll, 0f, vertical);
+        FlightControlData data = new FlightControlData(pitch, roll, yaw, vertical);
         flightController.sendVirtualStickFlightControlData(data, error -> {
             if (error != null) {
                 Log.e(TAG, "Virtual stick send error: " + error.getDescription());
             }
         });
+    }
+
+    // =========================================================================
+    // Yaw Control
+    // =========================================================================
+
+    /**
+     * Computes a yaw rate command (degrees/second) to rotate the drone nose
+     * toward the given target heading.
+     *
+     * Uses a P controller with a deadband to prevent jitter from GPS noise:
+     *   - If |headingError| <= YAW_DEADBAND_DEG → return 0 (no rotation needed)
+     *   - Otherwise → yawRate = Kp_YAW * headingError, clamped to ±maxYawRate
+     *
+     * The heading error is normalized to [-180, +180] so the drone always
+     * takes the shortest rotational path.
+     *
+     * @param targetHeadingDeg Target heading in degrees (0 = North, 90 = East).
+     * @return Yaw rate in degrees/second. Positive = clockwise rotation.
+     */
+    private float computeYawRate(double targetHeadingDeg) {
+        // Deadband — ignore small errors caused by GPS position noise
+        final float YAW_DEADBAND_DEG = 5.0f;
+
+        double headingError = WaypointNavigationMath.normalizeHeadingError(
+                targetHeadingDeg - currentHeadingDeg);
+
+        if (Math.abs(headingError) <= YAW_DEADBAND_DEG) return 0f;
+
+        float yawRate = (float)(tuning.getKpYaw() * headingError);
+        float maxRate = tuning.getMaxYawRate();
+        return Math.max(-maxRate, Math.min(maxRate, yawRate));
     }
 
     // =========================================================================
@@ -639,6 +758,7 @@ public class WaypointMissionController {
     private void resetMissionState() {
         currentWaypointIndex = 0;
         previousDistance     = 0.0;
+        isTakingOff          = false;
         isDwelling           = false;
         cancelCountdown();
     }

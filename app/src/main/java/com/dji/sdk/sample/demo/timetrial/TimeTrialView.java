@@ -1,8 +1,10 @@
-package com.dji.sdk.sample.demo.virtualstickwaypoint;
+package com.dji.sdk.sample.demo.timetrial;
 
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.Typeface;
 import android.util.AttributeSet;
 import android.view.View;
 import android.widget.Button;
@@ -15,52 +17,52 @@ import android.app.Activity;
 
 import androidx.annotation.NonNull;
 
+import com.dji.sdk.sample.demo.virtualstickwaypoint.QrWaypointScanActivity;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
 import java.util.List;
 
 /**
- * VirtualStickWaypointView
+ * TimeTrialView
  *
- * Entry point for the DemoList — the class DemoListView.java points to.
- * Entry point for the DemoList — this is the class DemoListView.java points to.
+ * UI entry point for the Time Trial Mission — registered in DemoListView
+ * under the Flight Controller group, directly below VirtualStickWaypointView.
  *
- * Responsibilities (this file only):
- *   - Build and own all Android widgets (TextViews, EditTexts, Buttons, ScrollView).
- *   - Wire button click handlers, which delegate immediately to WaypointMissionController.
- *   - Implement MissionCallback to receive UI update events from the controller.
- *   - Launch QrWaypointScanActivity and forward the scanned payload to WaypointStore.
+ * The time trial flies through waypoints as fast as possible with no dwell
+ * stop at each gate. Split times and total elapsed time are displayed live.
  *
- * No navigation math, no mission logic, no DJI SDK calls live here.
+ * File map for this system:
+ *   TimeTrialMissionController — control loop, gate detection, timing, RTH
+ *   TimeTrialWaypointStore     — waypoint list, persistence, QR parsing
+ *   TimeTrialTuningPanel       — PD parameter UI, SharedPrefs persistence
+ *   TimeTrialCallback          — interface connecting controller → view
  *
- * File map:
- *   WaypointMissionController  — mission state machine, control loop, dwell, RTH
- *   WaypointStore              — waypoint list, SharedPrefs persistence, QR parsing
- *   WaypointNavigationMath     — haversine, bearing, coordinate conversion
- *   TuningPanel                — PD parameter UI and SharedPrefs persistence
- *   MissionCallback            — interface connecting controller → view
- * To change flight behaviour edit WaypointMissionController.
- * To change stored waypoints edit WaypointStore.
- * To change PD parameters edit TuningPanel.
- * To change distance/bearing math edit WaypointNavigationMath.
+ * Shared with waypoint system (no duplication):
+ *   QrWaypointScanActivity     — same QR scanner Activity
+ *   WaypointNavigationMath     — same distance/bearing/yaw math
+ *   FlightLogger               — same CSV logger
  */
-public class VirtualStickWaypointView extends LinearLayout
-        implements PresentableView, MissionCallback {
+public class TimeTrialView extends LinearLayout
+        implements PresentableView, TimeTrialCallback {
 
-    private static final String TAG = "VSWaypointView";
+    private static final String TAG = "TimeTrialView";
 
     // ── Collaborators ─────────────────────────────────────────────────────────
-    private WaypointStore             store;
-    private TuningPanel               tuning;
-    private WaypointStore            store;
-    private TuningPanel              tuning;
-    private WaypointMissionController controller;
+    private TimeTrialWaypointStore     store;
+    private TimeTrialTuningPanel       tuning;
+    private TimeTrialMissionController controller;
 
-    // ── UI widgets ────────────────────────────────────────────────────────────
-    private TextView   tvStatus;
-    private TextView   tvCurrentWaypoint;
-    private TextView   tvDronePos;
-    private TextView   tvDroneSpeed;
+    // ── Timing display widgets ────────────────────────────────────────────────
+    private TextView tvElapsed;
+    private TextView tvLastSplit;
+
+    // ── Status / telemetry widgets ────────────────────────────────────────────
+    private TextView tvStatus;
+    private TextView tvCurrentGate;
+    private TextView tvDronePos;
+    private TextView tvDroneSpeed;
+
+    // ── Waypoint management widgets ───────────────────────────────────────────
     private TextView   tvWaypointList;
     private EditText   etLat;
     private EditText   etLng;
@@ -69,8 +71,12 @@ public class VirtualStickWaypointView extends LinearLayout
     private Button     btnImportQr;
     private Button     btnEditWaypoint;
     private Button     btnClearWaypoints;
+
+    // ── Mission control widgets ───────────────────────────────────────────────
     private Button     btnStart;
     private Button     btnStop;
+
+    // ── Log ───────────────────────────────────────────────────────────────────
     private ScrollView scrollLog;
     private TextView   tvLog;
 
@@ -78,12 +84,12 @@ public class VirtualStickWaypointView extends LinearLayout
     // Constructors
     // =========================================================================
 
-    public VirtualStickWaypointView(Context context) {
+    public TimeTrialView(Context context) {
         super(context);
         init(context);
     }
 
-    public VirtualStickWaypointView(Context context, AttributeSet attrs) {
+    public TimeTrialView(Context context, AttributeSet attrs) {
         super(context, attrs);
         init(context);
     }
@@ -100,7 +106,7 @@ public class VirtualStickWaypointView extends LinearLayout
     public String getHint() { return this.getClass().getSimpleName() + ".java"; }
 
     // =========================================================================
-    // MissionCallback implementation
+    // TimeTrialCallback implementation
     // All methods are already called on the main thread by the controller.
     // =========================================================================
 
@@ -111,7 +117,7 @@ public class VirtualStickWaypointView extends LinearLayout
 
     @Override
     public void onTargetLabelChanged(String label) {
-        tvCurrentWaypoint.setText(label);
+        tvCurrentGate.setText(label);
     }
 
     @Override
@@ -131,7 +137,7 @@ public class VirtualStickWaypointView extends LinearLayout
         btnEditWaypoint.setEnabled(!missionActive);
         btnClearWaypoints.setEnabled(!missionActive);
         if (!missionActive) {
-            tvCurrentWaypoint.setText("Target: —");
+            tvCurrentGate.setText("Target: —");
         }
     }
 
@@ -141,46 +147,15 @@ public class VirtualStickWaypointView extends LinearLayout
         tvDroneSpeed.setText(speedLabel);
     }
 
-    // =========================================================================
-    // MissionCallback implementation
-    // All methods are already called on the main thread by the controller.
-    // =========================================================================
-
     @Override
-    public void onStatusChanged(String status) {
-        tvStatus.setText(status);
+    public void onTimingUpdated(String elapsed, String lastSplit) {
+        tvElapsed.setText(elapsed);
+        tvLastSplit.setText(lastSplit);
     }
 
     @Override
-    public void onTargetLabelChanged(String label) {
-        tvCurrentWaypoint.setText(label);
-    }
-
-    @Override
-    public void onLogMessage(String message) {
-        post(() -> {
-            tvLog.append(message + "\n");
-            scrollLog.post(() -> scrollLog.fullScroll(View.FOCUS_DOWN));
-        });
-    }
-
-    @Override
-    public void onMissionActiveChanged(boolean missionActive) {
-        btnStart.setEnabled(!missionActive);
-        btnStop.setEnabled(missionActive);
-        btnAddWaypoint.setEnabled(!missionActive);
-        btnImportQr.setEnabled(!missionActive);
-        btnEditWaypoint.setEnabled(!missionActive);
-        btnClearWaypoints.setEnabled(!missionActive);
-        if (!missionActive) {
-            tvCurrentWaypoint.setText("Target: —");
-        }
-    }
-
-    @Override
-    public void onTelemetryUpdated(String positionLabel, String speedLabel) {
-        tvDronePos.setText(positionLabel);
-        tvDroneSpeed.setText(speedLabel);
+    public void onSplitRecorded(int wpNumber, String splitTime, String totalTime) {
+        tvLastSplit.setText("Gate " + wpNumber + ": " + splitTime);
     }
 
     // =========================================================================
@@ -191,37 +166,82 @@ public class VirtualStickWaypointView extends LinearLayout
         setOrientation(VERTICAL);
         setPadding(24, 24, 24, 24);
 
-        // ── Collaborators ─────────────────────────────────────────────────────
-        store      = new WaypointStore(context);
-        tuning     = new TuningPanel(context);
-        // ── Collaborators — constructed before any UI that reads from them ────
-        store   = new WaypointStore(context);
-        tuning  = new TuningPanel(context);
-        controller = new WaypointMissionController(context, store, tuning, this);
+        store      = new TimeTrialWaypointStore(context);
+        tuning     = new TimeTrialTuningPanel(context);
+        controller = new TimeTrialMissionController(context, store, tuning, this);
 
-        // ── Status labels ─────────────────────────────────────────────────────
+        // ── Timing display — prominent at the top ─────────────────────────────
+        LinearLayout timingRow = new LinearLayout(context);
+        timingRow.setOrientation(HORIZONTAL);
+        timingRow.setBackgroundColor(Color.parseColor("#1A1A2E"));
+        timingRow.setPadding(16, 12, 16, 12);
+
+        LinearLayout elapsedBlock = new LinearLayout(context);
+        elapsedBlock.setOrientation(VERTICAL);
+        elapsedBlock.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView elapsedLabel = new TextView(context);
+        elapsedLabel.setText("ELAPSED");
+        elapsedLabel.setTextSize(10f);
+        elapsedLabel.setTextColor(Color.parseColor("#8888AA"));
+        elapsedLabel.setLetterSpacing(0.15f);
+        elapsedBlock.addView(elapsedLabel);
+
+        tvElapsed = new TextView(context);
+        tvElapsed.setText("--:--.--");
+        tvElapsed.setTextSize(28f);
+        tvElapsed.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        tvElapsed.setTextColor(Color.parseColor("#00E5FF"));
+        elapsedBlock.addView(tvElapsed);
+
+        timingRow.addView(elapsedBlock);
+
+        LinearLayout splitBlock = new LinearLayout(context);
+        splitBlock.setOrientation(VERTICAL);
+        splitBlock.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView splitLabel = new TextView(context);
+        splitLabel.setText("LAST SPLIT");
+        splitLabel.setTextSize(10f);
+        splitLabel.setTextColor(Color.parseColor("#8888AA"));
+        splitLabel.setLetterSpacing(0.15f);
+        splitBlock.addView(splitLabel);
+
+        tvLastSplit = new TextView(context);
+        tvLastSplit.setText("—");
+        tvLastSplit.setTextSize(16f);
+        tvLastSplit.setTypeface(Typeface.MONOSPACE);
+        tvLastSplit.setTextColor(Color.parseColor("#69FF47"));
+        splitBlock.addView(tvLastSplit);
+
+        timingRow.addView(splitBlock);
+        addView(timingRow);
+
+        // ── Status / telemetry ────────────────────────────────────────────────
         tvStatus = new TextView(context);
-        tvStatus.setText("Mission: IDLE");
-        tvStatus.setTextSize(16f);
-        tvStatus.setPadding(0, 0, 0, 6);
+        tvStatus.setText("Time Trial: IDLE");
+        tvStatus.setTextSize(15f);
+        tvStatus.setPadding(0, 10, 0, 4);
         addView(tvStatus);
 
-        tvCurrentWaypoint = new TextView(context);
-        tvCurrentWaypoint.setText("Target: —");
-        tvCurrentWaypoint.setTextSize(13f);
-        tvCurrentWaypoint.setPadding(0, 0, 0, 6);
-        addView(tvCurrentWaypoint);
+        tvCurrentGate = new TextView(context);
+        tvCurrentGate.setText("Target: —");
+        tvCurrentGate.setTextSize(13f);
+        tvCurrentGate.setPadding(0, 0, 0, 4);
+        addView(tvCurrentGate);
 
         tvDronePos = new TextView(context);
         tvDronePos.setText("Drone: unknown");
         tvDronePos.setTextSize(13f);
-        tvDronePos.setPadding(0, 0, 0, 4);
+        tvDronePos.setPadding(0, 0, 0, 2);
         addView(tvDronePos);
 
         tvDroneSpeed = new TextView(context);
         tvDroneSpeed.setText("Speed: — m/s");
         tvDroneSpeed.setTextSize(13f);
-        tvDroneSpeed.setPadding(0, 0, 0, 14);
+        tvDroneSpeed.setPadding(0, 0, 0, 12);
         addView(tvDroneSpeed);
 
         // ── Coordinate input row ──────────────────────────────────────────────
@@ -261,13 +281,13 @@ public class VirtualStickWaypointView extends LinearLayout
 
         addView(inputRow);
 
-        // ── Add / Import buttons ──────────────────────────────────────────────
+        // ── Add / Import QR buttons ───────────────────────────────────────────
         LinearLayout btnRow1 = new LinearLayout(context);
         btnRow1.setOrientation(HORIZONTAL);
         btnRow1.setPadding(0, 8, 0, 8);
 
         btnAddWaypoint = new Button(context);
-        btnAddWaypoint.setText("Add Waypoint");
+        btnAddWaypoint.setText("Add Gate");
         LinearLayout.LayoutParams bP1 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         bP1.setMarginEnd(8);
@@ -279,7 +299,7 @@ public class VirtualStickWaypointView extends LinearLayout
         btnImportQr.setText("Import QR");
         btnImportQr.setLayoutParams(new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        btnImportQr.setOnClickListener(v -> onImportWaypointsQr());
+        btnImportQr.setOnClickListener(v -> onImportGatesQr());
         btnRow1.addView(btnImportQr);
 
         addView(btnRow1);
@@ -290,30 +310,30 @@ public class VirtualStickWaypointView extends LinearLayout
         btnRowEdit.setPadding(0, 0, 0, 8);
 
         btnEditWaypoint = new Button(context);
-        btnEditWaypoint.setText("Edit Waypoint");
+        btnEditWaypoint.setText("Edit Gate");
         LinearLayout.LayoutParams bP3 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         bP3.setMarginEnd(8);
         btnEditWaypoint.setLayoutParams(bP3);
-        btnEditWaypoint.setOnClickListener(v -> onEditWaypoint());
+        btnEditWaypoint.setOnClickListener(v -> onEditGate());
         btnRowEdit.addView(btnEditWaypoint);
 
         btnClearWaypoints = new Button(context);
         btnClearWaypoints.setText("Clear All");
         btnClearWaypoints.setLayoutParams(new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        btnClearWaypoints.setOnClickListener(v -> onClearWaypoints());
+        btnClearWaypoints.setOnClickListener(v -> onClearGates());
         btnRowEdit.addView(btnClearWaypoints);
 
         addView(btnRowEdit);
 
-        // ── Waypoint list display ─────────────────────────────────────────────
+        // ── Gate list display ─────────────────────────────────────────────────
         tvWaypointList = new TextView(context);
         tvWaypointList.setTextSize(12f);
         tvWaypointList.setPadding(0, 0, 0, 12);
-        tvWaypointList.setOnClickListener(v -> onEditWaypoint());
+        tvWaypointList.setOnClickListener(v -> onEditGate());
         addView(tvWaypointList);
-        refreshWaypointListDisplay();
+        refreshGateListDisplay();
 
         // ── Start / Stop buttons ──────────────────────────────────────────────
         LinearLayout btnRow2 = new LinearLayout(context);
@@ -321,7 +341,7 @@ public class VirtualStickWaypointView extends LinearLayout
         btnRow2.setPadding(0, 0, 0, 16);
 
         btnStart = new Button(context);
-        btnStart.setText("Start Mission");
+        btnStart.setText("Start Time Trial");
         LinearLayout.LayoutParams bP5 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         bP5.setMarginEnd(8);
@@ -330,7 +350,7 @@ public class VirtualStickWaypointView extends LinearLayout
         btnRow2.addView(btnStart);
 
         btnStop = new Button(context);
-        btnStop.setText("Stop Mission");
+        btnStop.setText("Stop");
         btnStop.setLayoutParams(new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         btnStop.setEnabled(false);
@@ -342,8 +362,8 @@ public class VirtualStickWaypointView extends LinearLayout
         // ── Tuning panel ──────────────────────────────────────────────────────
         tuning.setChangeListener((kp, kd, kpV, speed, decel, brakeDist) ->
                 onLogMessage(String.format(
-                        "Tuning: Kp=%.2f Kd=%.2f KpV=%.2f speed=%.1f decel=%.2f brakeD=%.1fm",
-                        kp, kd, kpV, speed, decel, brakeDist)));
+                        "TT Tuning: Kp=%.2f Kd=%.2f speed=%.1f decel=%.2f brakeD=%.1fm",
+                        kp, kd, speed, decel, brakeDist)));
         addView(tuning.buildPanelView(context));
 
         // ── Scrollable log ────────────────────────────────────────────────────
@@ -353,11 +373,10 @@ public class VirtualStickWaypointView extends LinearLayout
 
         scrollLog = new ScrollView(context);
         scrollLog.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 500));
+                LinearLayout.LayoutParams.MATCH_PARENT, 400));
         scrollLog.addView(tvLog);
         addView(scrollLog);
 
-        // ── Kick off flight controller init ───────────────────────────────────
         controller.initFlightController();
     }
 
@@ -382,8 +401,8 @@ public class VirtualStickWaypointView extends LinearLayout
             store.addWaypoint(lat, lng, alt);
             etLat.setText("");
             etLng.setText("");
-            refreshWaypointListDisplay();
-            onLogMessage(String.format("Added waypoint %d: (%.6f, %.6f) @ %.1fm",
+            refreshGateListDisplay();
+            onLogMessage(String.format("Added gate %d: (%.6f, %.6f) @ %.1fm",
                     store.size(), lat, lng, alt));
         } catch (NumberFormatException e) {
             showToast("Invalid coordinates.");
@@ -392,19 +411,19 @@ public class VirtualStickWaypointView extends LinearLayout
         }
     }
 
-    private void onImportWaypointsQr() {
+    private void onImportGatesQr() {
         Context ctx = getContext();
         if (!(ctx instanceof Activity)) {
             showToast("QR scanner needs an activity context.");
             return;
         }
         QrWaypointScanActivity.setResultListener(
-                payload -> post(() -> handleWaypointQrPayload(payload)));
+                payload -> post(() -> handleGateQrPayload(payload)));
         ctx.startActivity(new Intent(ctx, QrWaypointScanActivity.class));
-        onLogMessage("Waypoint QR scanner opened.");
+        onLogMessage("Gate QR scanner opened.");
     }
 
-    private void handleWaypointQrPayload(String payload) {
+    private void handleGateQrPayload(String payload) {
         final List<double[]> imported;
         try {
             imported = store.parseWaypointQrPayload(payload);
@@ -414,9 +433,8 @@ public class VirtualStickWaypointView extends LinearLayout
             return;
         }
 
-        // Build preview string for the confirm dialog
         StringBuilder preview = new StringBuilder();
-        preview.append("Found ").append(imported.size()).append(" waypoint");
+        preview.append("Found ").append(imported.size()).append(" gate");
         if (imported.size() != 1) preview.append("s");
         preview.append(":\n\n");
         for (int i = 0; i < imported.size(); i++) {
@@ -426,25 +444,25 @@ public class VirtualStickWaypointView extends LinearLayout
         }
 
         new AlertDialog.Builder(getContext())
-                .setTitle("Import Waypoints")
+                .setTitle("Import Gates")
                 .setMessage(preview.toString())
                 .setPositiveButton("Append", (dialog, which) -> {
                     store.appendWaypoints(imported);
-                    refreshWaypointListDisplay();
-                    onLogMessage("Imported " + imported.size() + " waypoint(s) from QR (appended).");
+                    refreshGateListDisplay();
+                    onLogMessage("Imported " + imported.size() + " gate(s) from QR (appended).");
                 })
                 .setNeutralButton("Replace", (dialog, which) -> {
                     store.replaceWaypoints(imported);
-                    refreshWaypointListDisplay();
-                    onLogMessage("Replaced waypoint list with " + imported.size() + " QR waypoint(s).");
+                    refreshGateListDisplay();
+                    onLogMessage("Replaced gate list with " + imported.size() + " QR gate(s).");
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    private void onEditWaypoint() {
+    private void onEditGate() {
         if (store.isEmpty()) {
-            showToast("No waypoints to edit.");
+            showToast("No gates to edit.");
             return;
         }
 
@@ -452,51 +470,53 @@ public class VirtualStickWaypointView extends LinearLayout
         String[] labels = new String[waypoints.size()];
         for (int i = 0; i < waypoints.size(); i++) {
             double[] wp = waypoints.get(i);
-            labels[i] = String.format("WP%d: %.6f, %.6f @ %.1fm", i + 1, wp[0], wp[1], wp[2]);
+            labels[i] = String.format("Gate %d: %.6f, %.6f @ %.1fm",
+                    i + 1, wp[0], wp[1], wp[2]);
         }
 
         new AlertDialog.Builder(getContext())
-                .setTitle("Edit Waypoint")
-                .setItems(labels, (dialog, which) -> showEditWaypointDialog(which))
+                .setTitle("Edit Gate")
+                .setItems(labels, (dialog, which) -> showEditGateDialog(which))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    private void showEditWaypointDialog(int index) {
+    private void showEditGateDialog(int index) {
         if (index < 0 || index >= store.size()) {
-            showToast("Waypoint no longer exists.");
+            showToast("Gate no longer exists.");
             return;
         }
 
         double[] wp = store.getWaypoint(index);
+
         LinearLayout editor = new LinearLayout(getContext());
         editor.setOrientation(VERTICAL);
         editor.setPadding(32, 16, 32, 0);
 
-        EditText latInput = buildEditorField("Latitude",   String.format("%.7f", wp[0]), true);
-        EditText lngInput = buildEditorField("Longitude",  String.format("%.7f", wp[1]), true);
-        EditText altInput = buildEditorField("Altitude (m)", String.format("%.1f", wp[2]), false);
+        EditText latInput = buildEditorField("Latitude",    String.format("%.7f", wp[0]), true);
+        EditText lngInput = buildEditorField("Longitude",   String.format("%.7f", wp[1]), true);
+        EditText altInput = buildEditorField("Altitude (m)", String.format("%.1f",  wp[2]), false);
 
         editor.addView(latInput);
         editor.addView(lngInput);
         editor.addView(altInput);
 
         AlertDialog dialog = new AlertDialog.Builder(getContext())
-                .setTitle("Waypoint " + (index + 1))
+                .setTitle("Gate " + (index + 1))
                 .setView(editor)
                 .setPositiveButton("Save", null)
                 .setNegativeButton("Cancel", null)
                 .create();
 
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
+        dialog.setOnShowListener(d ->
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                     try {
                         double lat = Double.parseDouble(latInput.getText().toString().trim());
                         double lng = Double.parseDouble(lngInput.getText().toString().trim());
                         float  alt = Float.parseFloat(altInput.getText().toString().trim());
                         store.editWaypoint(index, lat, lng, alt);
-                        refreshWaypointListDisplay();
-                        onLogMessage(String.format("Updated waypoint %d: (%.6f, %.6f) @ %.1fm",
+                        refreshGateListDisplay();
+                        onLogMessage(String.format("Updated gate %d: (%.6f, %.6f) @ %.1fm",
                                 index + 1, lat, lng, alt));
                         dialog.dismiss();
                     } catch (NumberFormatException e) {
@@ -509,23 +529,22 @@ public class VirtualStickWaypointView extends LinearLayout
         dialog.show();
     }
 
-    private void onClearWaypoints() {
+    private void onClearGates() {
         store.clearWaypoints();
-        refreshWaypointListDisplay();
-        onLogMessage("Waypoints cleared.");
+        refreshGateListDisplay();
+        onLogMessage("Gates cleared.");
     }
 
     // =========================================================================
     // UI helpers
     // =========================================================================
 
-    /** Rebuilds the waypoint list TextView from the current WaypointStore contents. */
-    private void refreshWaypointListDisplay() {
+    private void refreshGateListDisplay() {
         if (store.isEmpty()) {
-            tvWaypointList.setText("Waypoints: (none)");
+            tvWaypointList.setText("Gates: (none)");
             return;
         }
-        StringBuilder sb = new StringBuilder("Waypoints:\n");
+        StringBuilder sb = new StringBuilder("Gates:\n");
         List<double[]> wps = store.getWaypoints();
         for (int i = 0; i < wps.size(); i++) {
             double[] wp = wps.get(i);
