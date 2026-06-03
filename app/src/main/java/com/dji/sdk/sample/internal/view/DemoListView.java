@@ -47,6 +47,7 @@ import com.dji.sdk.sample.demo.key.KeyedInterfaceView;
 import com.dji.sdk.sample.demo.keymanager.KeyManagerView;
 import com.dji.sdk.sample.demo.lidar.LidarView;
 import com.dji.sdk.sample.demo.lookat.LookAtMissionView;
+import com.dji.sdk.sample.demo.mapmission.MapMissionIntegrationView;
 import com.dji.sdk.sample.demo.missionoperator.FollowMeMissionOperatorView;
 import com.dji.sdk.sample.demo.missionoperator.WaypointMissionOperatorView;
 import com.dji.sdk.sample.demo.missionoperator.WaypointV2MissionOperatorView;
@@ -208,6 +209,7 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.flight_controller_listview_intelligent_flight_assistant,
                         FlightAssistantPushDataView.class),
                 new GroupItem(R.string.flight_controller_listview_networkRTK, NetworkRTKView.class),
+                new GroupItem(R.string.map_mission_integration_title, MapMissionIntegrationView.class),
                 new GroupItem(R.string.component_listview_geofencing, GeofencingView.class),
                 new GroupItem(R.string.waypoint_mission_title, WaypointMissionView.class),
                 new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class),

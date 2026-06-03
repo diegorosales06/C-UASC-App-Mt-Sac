@@ -53,15 +53,10 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     private static final double ACCEPTANCE_RADIUS_M = 2.0;
     private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
 
-    // Default drop target coordinates
-    private static final double DEFAULT_DROP_LAT = 34.0272525;
-    private static final double DEFAULT_DROP_LNG = -117.8511957;
-    private static final float DEFAULT_DROP_ALT = 8.0f;
-
     private boolean missionRunning = false;
-    private double dropTargetLat = DEFAULT_DROP_LAT;
-    private double dropTargetLng = DEFAULT_DROP_LNG;
-    private float dropTargetAlt = DEFAULT_DROP_ALT;
+    private double dropTargetLat = DropTargetStore.DEFAULT_DROP_LAT;
+    private double dropTargetLng = DropTargetStore.DEFAULT_DROP_LNG;
+    private float dropTargetAlt = DropTargetStore.DEFAULT_DROP_ALT;
     private boolean dropTargetSet = true;
 
     private double currentLat = 0.0;
@@ -156,10 +151,13 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         etDropAlt.setLayoutParams(p3);
         dropInputRow.addView(etDropAlt);
 
-        // Auto-load default drop target into the UI
-        etDropLat.setText(String.valueOf(DEFAULT_DROP_LAT));
-        etDropLng.setText(String.valueOf(DEFAULT_DROP_LNG));
-        etDropAlt.setText(String.valueOf(DEFAULT_DROP_ALT));
+        DropTargetStore.DropTarget savedDropTarget = DropTargetStore.load(context);
+        dropTargetLat = savedDropTarget.latitude;
+        dropTargetLng = savedDropTarget.longitude;
+        dropTargetAlt = savedDropTarget.altitudeMeters;
+        etDropLat.setText(String.valueOf(dropTargetLat));
+        etDropLng.setText(String.valueOf(dropTargetLng));
+        etDropAlt.setText(String.valueOf(dropTargetAlt));
 
         addView(dropInputRow);
 
@@ -271,6 +269,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         }
 
         dropTargetSet = true;
+        DropTargetStore.save(getContext(), dropTargetLat, dropTargetLng, dropTargetAlt);
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) { appendLog("Failed to enable Virtual Stick: " + error.getDescription()); return; }
             appendLog("Virtual Stick mode enabled.");

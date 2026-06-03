@@ -8,6 +8,7 @@
 
 
     <string name="component_listview_geofencing">Geofencing</string>
+    <string name="map_mission_integration_title">Map Mission Integration</string>
     <string name="waypoint_mission_title">Waypoint Mission</string>
     <string name="virtualStickWaypint_mission_title">VS Waypoint Mission</string>
     <string name="time_trial_mission_title">Time Trial Mission</string>
