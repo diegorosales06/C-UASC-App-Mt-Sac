@@ -7,6 +7,7 @@ import android.view.View;
 import com.dji.sdk.sample.R;
 import com.dji.sdk.sample.demo.missionmanager.MissionBaseView;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 
 import java.util.ArrayList;
@@ -65,6 +66,22 @@ public class WaypointMissionOperatorView extends MissionBaseView {
     private WaypointMission mission = null;
     private WaypointMissionOperatorListener listener;
     private float calculateTotalTime = 0.0f;
+    private final FlightControllerStateDispatcher.Listener flightStateListener = flightControllerState -> {
+        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
+        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
+        flightState = flightControllerState.getFlightMode();
+
+        if (flightControllerState.isLandingConfirmationNeeded() && flightController != null) {
+            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
+                @Override
+                public void onResult(DJIError djiError) {
+                    ToastUtils.setResultToToast(djiError == null ? "confirmLanding OK" : djiError.getDescription());
+                }
+            });
+        }
+
+        updateWaypointMissionState();
+    };
 
 
     public WaypointMissionOperatorView(Context context) {
@@ -185,25 +202,7 @@ public class WaypointMissionOperatorView extends MissionBaseView {
                 flightController = ((Aircraft) product).getFlightController();
             }
             if (flightController != null) {
-                flightController.setStateCallback(new FlightControllerState.Callback() {
-                    @Override
-                    public void onUpdate(@NonNull FlightControllerState flightControllerState) {
-                        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
-                        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
-                        flightState = flightControllerState.getFlightMode();
-
-                        if (flightControllerState.isLandingConfirmationNeeded()) {
-                            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
-                                @Override
-                                public void onResult(DJIError djiError) {
-                                    ToastUtils.setResultToToast(djiError == null ? "confirmLanding OK" : djiError.getDescription());
-                                }
-                            });
-                        }
-
-                        updateWaypointMissionState();
-                    }
-                });
+                FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
             }
         }
         waypointMissionOperator = MissionControl.getInstance().getWaypointMissionOperator();
@@ -215,7 +214,7 @@ public class WaypointMissionOperatorView extends MissionBaseView {
         tearDownListener();
         if (flightController != null) {
             flightController.getSimulator().stop(null);
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
         super.onDetachedFromWindow();
     }

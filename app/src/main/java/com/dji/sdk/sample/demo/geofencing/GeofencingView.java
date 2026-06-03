@@ -2,6 +2,8 @@ package com.dji.sdk.sample.demo.geofencing;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
@@ -15,12 +17,15 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import dji.common.error.DJIError;
+import dji.common.flightcontroller.FlightMode;
 import dji.common.flightcontroller.LocationCoordinate3D;
 import dji.common.util.CommonCallbacks;
 import dji.sdk.flightcontroller.FlightController;
@@ -96,9 +101,14 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     private FlightController flightController;
 
     // ---------------------------------------------------------------------------------
-    // Logger
+    // Background enforcement state
     // ---------------------------------------------------------------------------------
-    private FlightLogger flightLogger;
+    private static FlightLogger flightLogger;
+    private static FlightController activeFlightController;
+    private static GeofencingView activeUiView;
+    private static final Handler SAFETY_HANDLER = new Handler(Looper.getMainLooper());
+    private static final FlightControllerStateDispatcher.Listener GEOFENCE_STATE_LISTENER =
+            GeofencingView::handleFlightControllerState;
 
     // ---------------------------------------------------------------------------------
     // Constructors
@@ -134,6 +144,7 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     // ---------------------------------------------------------------------------------
 
     private void init(Context context) {
+        activeUiView = this;
         setOrientation(VERTICAL);
         setPadding(24, 24, 24, 24);
 
@@ -421,74 +432,120 @@ public class GeofencingView extends LinearLayout implements PresentableView {
 
     private void attachStateCallback() {
         if (flightController == null) return;
+        activeFlightController = flightController;
+        FlightControllerStateDispatcher.addListener(flightController, GEOFENCE_STATE_LISTENER);
+    }
 
-        flightController.setStateCallback(state -> {
-            LocationCoordinate3D location = state.getAircraftLocation();
-            if (location == null) return;
+    private static void handleFlightControllerState(@NonNull dji.common.flightcontroller.FlightControllerState state) {
+        LocationCoordinate3D location = state.getAircraftLocation();
+        if (location == null) return;
 
-            double droneLat = location.getLatitude();
-            double droneLng = location.getLongitude();
+        double droneLat = location.getLatitude();
+        double droneLng = location.getLongitude();
 
-            // Ignore readings with no GPS fix (DJI SDK returns 0,0 when no fix)
-            if (droneLat == 0.0 && droneLng == 0.0) return;
+        // Ignore readings with no GPS fix (DJI SDK returns 0,0 when no fix)
+        if (droneLat == 0.0 && droneLng == 0.0) return;
 
-            // Only enforce the boundary if the fence is currently active
-            if (!fenceActive) return;
+        // Only enforce the boundary if the fence is currently active
+        if (!fenceActive) return;
 
-            boolean inside = isPointInPolygon(droneLat, droneLng, fenceVertices);
+        boolean inside = isPointInPolygon(droneLat, droneLng, fenceVertices);
 
-            // Log position and inside flag to Logcat on every tick
-            Log.d(TAG, "lat=" + droneLat + "  lng=" + droneLng + "  inside=" + inside);
+        // Log position and inside flag to Logcat on every tick
+        Log.d(TAG, "lat=" + droneLat + "  lng=" + droneLng + "  inside=" + inside);
 
-            // Also print to the on-screen log
-            post(() -> appendLog(String.format(
-                    "lat=%.6f  lng=%.6f  inside=%s", droneLat, droneLng, inside)));
+        // Also print to the on-screen log when the fence view is visible.
+        appendActiveLog(String.format(
+                "lat=%.6f  lng=%.6f  inside=%s", droneLat, droneLng, inside));
 
-            // Write to CSV file
+        // Write to CSV file
+        if (flightLogger != null) {
+            flightLogger.log(droneLat, droneLng, inside);
+        }
+
+        if (!inside) {
+            fenceActive = false;
+
+            // Stop the logger on breach
             if (flightLogger != null) {
-                flightLogger.log(droneLat, droneLng, inside);
+                flightLogger.stop();
             }
 
-            if (!inside) {
-                fenceActive = false;
-
-                // Stop the logger on breach
-                if (flightLogger != null) {
-                    flightLogger.stop();
-                }
-
-                post(() -> {
-                    appendLog(String.format(
-                            "BREACH at (%.6f, %.6f) — initiating RTH.", droneLat, droneLng));
-                    syncButtonState();
-                    tvStatus.setText("Fence: BREACH — RTH issued");
+            appendActiveLog(String.format(
+                    "BREACH at (%.6f, %.6f) — initiating RTH.", droneLat, droneLng));
+            GeofencingView view = activeUiView;
+            if (view != null) {
+                view.post(() -> {
+                    view.syncButtonState();
+                    view.tvStatus.setText("Fence: BREACH — RTH issued");
                 });
-
-                triggerReturnToHome();
             }
-        });
+
+            triggerReturnToHome(state.getFlightMode() == FlightMode.JOYSTICK);
+            FlightControllerStateDispatcher.removeListener(GEOFENCE_STATE_LISTENER);
+            activeFlightController = null;
+        }
     }
 
     private void detachStateCallback() {
-        if (flightController != null) {
-            flightController.setStateCallback(null);
-        }
+        FlightControllerStateDispatcher.removeListener(GEOFENCE_STATE_LISTENER);
+        activeFlightController = null;
     }
 
     // ---------------------------------------------------------------------------------
     // Return-to-Home
     // ---------------------------------------------------------------------------------
 
-    private void triggerReturnToHome() {
-        if (flightController == null) return;
+    private static void triggerReturnToHome(boolean disableVirtualStickFirst) {
+        FlightController controller = activeFlightController;
+        if (controller == null) return;
 
-        flightController.startGoHome(new CommonCallbacks.CompletionCallback() {
+        if (!disableVirtualStickFirst) {
+            appendActiveLog("Manual/control flight mode detected — commanding RTH directly.");
+            startGoHome(controller, 1);
+            return;
+        }
+
+        appendActiveLog("Virtual Stick flight mode detected — disabling before RTH.");
+        AtomicBoolean rthIssued = new AtomicBoolean(false);
+        Runnable fallback = () -> {
+            appendActiveLog("Virtual Stick disable callback delayed — trying RTH now.");
+            startGoHomeOnce(controller, rthIssued, 1);
+        };
+        SAFETY_HANDLER.postDelayed(fallback, 2000L);
+
+        controller.setVirtualStickModeEnabled(false, disableError -> {
+            SAFETY_HANDLER.removeCallbacks(fallback);
+            if (disableError != null) {
+                appendActiveLog("Virtual Stick disable before geofence RTH failed: "
+                        + disableError.getDescription());
+            }
+            startGoHomeOnce(controller, rthIssued, 1);
+        });
+    }
+
+    private static void startGoHomeOnce(FlightController controller,
+                                        AtomicBoolean rthIssued,
+                                        int retriesRemaining) {
+        if (!rthIssued.compareAndSet(false, true)) return;
+        startGoHome(controller, retriesRemaining);
+    }
+
+    private static void startGoHome(FlightController controller, int retriesRemaining) {
+        controller.startGoHome(new CommonCallbacks.CompletionCallback() {
             @Override
             public void onResult(DJIError djiError) {
                 if (djiError == null) {
-                    post(() -> appendLog("RTH command accepted by flight controller."));
-                } else {
-                    post(() -> appendLog("RTH command failed: " + djiError.getDescription()));
+                    appendActiveLog("RTH command accepted by flight controller.");
+                    return;
+                }
+
+                appendActiveLog("RTH command failed: " + djiError.getDescription());
+                if (retriesRemaining > 0) {
+                    appendActiveLog("Retrying geofence RTH command.");
+                    SAFETY_HANDLER.postDelayed(
+                            () -> startGoHome(controller, retriesRemaining - 1),
+                            1000L);
                 }
             }
         });
@@ -599,6 +656,13 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         });
     }
 
+    private static void appendActiveLog(String message) {
+        GeofencingView view = activeUiView;
+        if (view != null) {
+            view.appendLog(message);
+        }
+    }
+
     private void showToast(String message) {
         post(() -> Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show());
     }
@@ -610,6 +674,9 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+        if (activeUiView == this) {
+            activeUiView = null;
+        }
         if (!fenceActive) {
             detachStateCallback();
         }

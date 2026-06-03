@@ -8,6 +8,7 @@ import android.util.Log;
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointNavigationMath;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
 
 import java.util.Timer;
@@ -21,6 +22,7 @@ import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
 import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
 import dji.common.flightcontroller.virtualstick.VerticalControlMode;
 import dji.common.flightcontroller.virtualstick.YawControlMode;
+import dji.common.model.LocationCoordinate2D;
 import dji.sdk.flightcontroller.FlightController;
 import dji.sdk.products.Aircraft;
 
@@ -78,6 +80,7 @@ public class TimeTrialMissionController {
 
     // ── Timing display update interval ────────────────────────────────────────
     private static final long TIMING_UPDATE_INTERVAL_MS = 100;
+    private static final long FINAL_RTH_DELAY_MS = 5_000L;
 
     // ── Dependencies ─────────────────────────────────────────────────────────
     private final TimeTrialWaypointStore store;
@@ -87,9 +90,12 @@ public class TimeTrialMissionController {
 
     // ── DJI ──────────────────────────────────────────────────────────────────
     private FlightController flightController;
+    private final FlightControllerStateDispatcher.Listener flightStateListener =
+            this::onFlightControllerState;
 
     // ── Mission state ─────────────────────────────────────────────────────────
     private boolean missionRunning       = false;
+    private boolean returnHomePending   = false;
     private int     currentWaypointIndex = 0;
     private double  previousDistance     = 0.0;
 
@@ -99,6 +105,9 @@ public class TimeTrialMissionController {
     private float   currentAlt        = 0.0f;
     private float   currentHeadingDeg = 0.0f;
     private boolean hasValidGPS       = false;
+    private double  homeLat           = 0.0;
+    private double  homeLng           = 0.0;
+    private boolean hasHomePoint      = false;
 
     // ── Timing state ──────────────────────────────────────────────────────────
     private long   missionStartTimeMs = 0L;
@@ -111,6 +120,7 @@ public class TimeTrialMissionController {
     private Timer    controlTimer;
     private final Handler mainHandler    = new Handler(Looper.getMainLooper());
     private Runnable timingRunnable;
+    private Runnable returnHomeRunnable;
 
     // ── FlightLogger ──────────────────────────────────────────────────────────
     private FlightLogger flightLogger;
@@ -158,7 +168,7 @@ public class TimeTrialMissionController {
                 flightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
                 flightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
                 flightController.setRollPitchCoordinateSystem(FlightCoordinateSystem.GROUND);
-                flightController.setStateCallback(this::onFlightControllerState);
+                FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
                 callback.onLogMessage("FlightController ready.");
             } else {
                 callback.onLogMessage("FlightController unavailable.");
@@ -193,6 +203,8 @@ public class TimeTrialMissionController {
             return;
         }
 
+        recordHomePointFromCurrentLocation();
+
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) {
                 callback.onLogMessage("Failed to enable Virtual Stick: "
@@ -222,6 +234,8 @@ public class TimeTrialMissionController {
     /** Stops the time trial immediately. */
     public void stopMission() {
         missionRunning = false;
+        returnHomePending = false;
+        cancelReturnHomeDelay();
         stopControlLoop();
         stopTimingUpdates();
 
@@ -255,15 +269,17 @@ public class TimeTrialMissionController {
 
     /** Detaches callbacks and cleans up. Call from TimeTrialView.onDetachedFromWindow(). */
     public void onDetached() {
-        if (missionRunning) {
+        if (missionRunning || returnHomePending) {
             missionRunning = false;
+            returnHomePending = false;
+            cancelReturnHomeDelay();
             stopControlLoop();
             stopTimingUpdates();
             sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) flightLogger.stop();
         }
         if (flightController != null) {
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
             flightController.setVirtualStickModeEnabled(false, null);
         }
     }
@@ -332,6 +348,10 @@ public class TimeTrialMissionController {
      * and the drone keeps flying at whatever speed it had.
      */
     private void runControlStep() {
+        if (returnHomePending) {
+            sendVelocityCommand(0, 0, 0f, 0);
+            return;
+        }
         if (!missionRunning || !hasValidGPS) return;
         if (currentWaypointIndex >= store.size()) return;
 
@@ -492,7 +512,6 @@ public class TimeTrialMissionController {
 
     private void finishRun() {
         missionRunning = false;
-        stopControlLoop();
         stopTimingUpdates();
 
         long totalMs = System.currentTimeMillis() - missionStartTimeMs;
@@ -526,11 +545,11 @@ public class TimeTrialMissionController {
         });
 
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
-            finishOfflineDebugMission(totalStr);
+            holdBeforeReturnHome(() -> finishOfflineDebugMission(totalStr));
             return;
         }
 
-        triggerRTH();
+        holdBeforeReturnHome(this::triggerRTH);
     }
 
     // =========================================================================
@@ -570,16 +589,100 @@ public class TimeTrialMissionController {
     private void triggerRTH() {
         if (flightController == null) return;
         flightController.setVirtualStickModeEnabled(false, error ->
-                flightController.startGoHome(rthError -> {
-                    if (rthError == null) {
-                        mainHandler.post(() -> {
-                            callback.onLogMessage("RTH initiated successfully.");
-                            callback.onStatusChanged("Time Trial: RTH");
-                        });
-                    } else {
-                        callback.onLogMessage("RTH failed: " + rthError.getDescription());
-                    }
-                }));
+                setHomeThenStartGoHome());
+    }
+
+    private void holdBeforeReturnHome(Runnable returnHomeAction) {
+        returnHomePending = true;
+        sendVelocityCommand(0, 0, 0f, 0);
+
+        callback.onLogMessage(String.format(
+                "Time trial complete. Holding for %.0f seconds before RTH.",
+                FINAL_RTH_DELAY_MS / 1000.0));
+        if (hasHomePoint) {
+            callback.onLogMessage(String.format(
+                    "RTH home point: %.6f, %.6f", homeLat, homeLng));
+        }
+
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Time Trial: HOLDING FOR RTH (5s)");
+            callback.onMissionActiveChanged(true);
+            callback.onTargetLabelChanged("Target: home");
+        });
+
+        cancelReturnHomeDelay();
+        returnHomeRunnable = () -> {
+            returnHomePending = false;
+            stopControlLoop();
+            returnHomeAction.run();
+        };
+        mainHandler.postDelayed(returnHomeRunnable, FINAL_RTH_DELAY_MS);
+    }
+
+    private void cancelReturnHomeDelay() {
+        if (returnHomeRunnable != null) {
+            mainHandler.removeCallbacks(returnHomeRunnable);
+            returnHomeRunnable = null;
+        }
+    }
+
+    private void recordHomePointFromCurrentLocation() {
+        if (!hasValidGPS) return;
+        homeLat = currentLat;
+        homeLng = currentLng;
+        hasHomePoint = true;
+        callback.onLogMessage(String.format(
+                "Home point recorded from takeoff/start position: %.6f, %.6f",
+                homeLat, homeLng));
+        setAircraftHomeToRecordedPoint();
+    }
+
+    private void setAircraftHomeToRecordedPoint() {
+        if (flightController == null || !hasHomePoint) return;
+        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
+        flightController.setHomeLocation(homePoint, error -> {
+            if (error == null) {
+                callback.onLogMessage("Aircraft home location set to recorded takeoff/start point.");
+            } else {
+                callback.onLogMessage("Home location update failed: "
+                        + error.getDescription()
+                        + ". RTH will use the aircraft's current home point if needed.");
+            }
+        });
+    }
+
+    private void setHomeThenStartGoHome() {
+        if (flightController == null) return;
+        if (!hasHomePoint) {
+            startGoHome();
+            return;
+        }
+
+        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
+        flightController.setHomeLocation(homePoint, error -> {
+            if (error == null) {
+                callback.onLogMessage("Home location confirmed for RTH.");
+            } else {
+                callback.onLogMessage("Could not confirm recorded home before RTH: "
+                        + error.getDescription()
+                        + ". Starting RTH with aircraft home point.");
+            }
+            startGoHome();
+        });
+    }
+
+    private void startGoHome() {
+        flightController.startGoHome(rthError -> {
+            if (rthError == null) {
+                mainHandler.post(() -> {
+                    callback.onLogMessage("RTH initiated successfully.");
+                    callback.onStatusChanged("Time Trial: RTH");
+                    callback.onMissionActiveChanged(false);
+                });
+            } else {
+                callback.onLogMessage("RTH failed: " + rthError.getDescription());
+            }
+        });
     }
 
     // =========================================================================
@@ -658,11 +761,13 @@ public class TimeTrialMissionController {
     private void resetMissionState() {
         currentWaypointIndex = 0;
         previousDistance     = 0.0;
+        returnHomePending    = false;
         missionStartTimeMs   = System.currentTimeMillis();
         lastSplitTimeMs      = missionStartTimeMs;
         lastSplitLabel       = "—";
         lastSplitWpNumber    = 0;
         splitTimes           = new long[store.size()];
+        cancelReturnHomeDelay();
     }
 
     private String buildTargetLabel() {

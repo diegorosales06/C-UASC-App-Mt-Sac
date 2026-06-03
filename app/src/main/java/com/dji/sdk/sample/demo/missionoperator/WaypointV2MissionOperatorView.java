@@ -11,6 +11,7 @@ import com.dji.sdk.sample.demo.missionmanager.MissionBaseView;
 import com.dji.sdk.sample.demo.missionoperator.util.ActionUtils;
 import com.dji.sdk.sample.demo.missionoperator.util.WaypointV2Factory;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ModuleVerificationUtil;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 
@@ -87,6 +88,22 @@ public class WaypointV2MissionOperatorView extends MissionBaseView {
     private static final double VERTICAL_DISTANCE = 30;
     private static final String TAG = WaypointV2MissionOperatorView.class.getSimpleName();
     private FlightController flightController = null;
+    private final FlightControllerStateDispatcher.Listener flightStateListener = flightControllerState -> {
+        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
+        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
+        flightState = flightControllerState.getFlightMode();
+        updateWaypointMissionState();
+
+        // Land to ground if the aircraft can.
+        if (flightControllerState.isLandingConfirmationNeeded() && flightController != null) {
+            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
+                @Override
+                public void onResult(DJIError djiError) {
+                    ToastUtils.setResultToToast(djiError == null ? "Confirm Landing" : djiError.getDescription());
+                }
+            });
+        }
+    };
 
     private DJISDKManager djisdkManager = DJISDKManager.getInstance();
 
@@ -111,25 +128,7 @@ public class WaypointV2MissionOperatorView extends MissionBaseView {
         if (DJISampleApplication.getAircraftInstance() != null) {
             if (ModuleVerificationUtil.isFlightControllerAvailable()) {
                 flightController = DJISampleApplication.getAircraftInstance().getFlightController();
-                flightController.setStateCallback(new FlightControllerState.Callback() {
-                    @Override
-                    public void onUpdate(@NonNull FlightControllerState flightControllerState) {
-                        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
-                        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
-                        flightState = flightControllerState.getFlightMode();
-                        updateWaypointMissionState();
-
-                        // Land to ground if the aircrat can
-                        if (flightControllerState.isLandingConfirmationNeeded()) {
-                            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
-                                @Override
-                                public void onResult(DJIError djiError) {
-                                    ToastUtils.setResultToToast(djiError == null ? "Confirm Landing" : djiError.getDescription());
-                                }
-                            });
-                        }
-                    }
-                });
+                FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
                 waypointV2MissionOperator = MissionControl.getInstance().getWaypointMissionV2Operator();
                 setUpListener();
             } else {
@@ -145,7 +144,7 @@ public class WaypointV2MissionOperatorView extends MissionBaseView {
         tearDownListener();
         if (flightController != null) {
             flightController.getSimulator().stop(null);
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
         super.onDetachedFromWindow();
     }

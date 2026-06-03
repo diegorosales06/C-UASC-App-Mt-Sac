@@ -7,6 +7,7 @@ import android.util.Log;
 
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
 
 import java.util.Timer;
@@ -19,6 +20,7 @@ import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
 import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
 import dji.common.flightcontroller.virtualstick.VerticalControlMode;
 import dji.common.flightcontroller.virtualstick.YawControlMode;
+import dji.common.model.LocationCoordinate2D;
 import dji.sdk.flightcontroller.FlightController;
 import dji.sdk.products.Aircraft;
 
@@ -65,6 +67,7 @@ public class WaypointMissionController {
     // Time (ms) the drone hovers at each waypoint before proceeding.
     // Change this value to adjust the stop duration.
     private static final long WAYPOINT_DWELL_MS = 10_000L;
+    private static final long FINAL_RTH_DELAY_MS = 5_000L;
 
     // ── Control loop timing ───────────────────────────────────────────────────
     private static final long  CONTROL_LOOP_INTERVAL_MS = 50;
@@ -94,10 +97,13 @@ public class WaypointMissionController {
 
     // ── DJI ──────────────────────────────────────────────────────────────────
     private FlightController flightController;
+    private final FlightControllerStateDispatcher.Listener flightStateListener =
+            this::onFlightControllerState;
 
     // ── Mission state ─────────────────────────────────────────────────────────
     private boolean missionRunning       = false;
     private boolean isTakingOff         = false; // true while waiting for stable hover
+    private boolean returnHomePending   = false;
     private int     currentWaypointIndex = 0;
     private double  previousDistance     = 0.0;
 
@@ -111,6 +117,9 @@ public class WaypointMissionController {
     private float   currentAlt     = 0.0f;
     private float   currentHeadingDeg = 0.0f; // yaw from FlightControllerState attitude
     private boolean hasValidGPS    = false;
+    private double  homeLat        = 0.0;
+    private double  homeLng        = 0.0;
+    private boolean hasHomePoint   = false;
 
     // ── Timer driving the control loop ────────────────────────────────────────
     private Timer controlTimer;
@@ -123,6 +132,7 @@ public class WaypointMissionController {
 
     // ── Dwell countdown runnable ──────────────────────────────────────────────
     private Runnable countdownRunnable;
+    private Runnable returnHomeRunnable;
 
     // =========================================================================
     // Constructor
@@ -173,7 +183,7 @@ public class WaypointMissionController {
                 flightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
                 flightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
                 flightController.setRollPitchCoordinateSystem(FlightCoordinateSystem.GROUND);
-                flightController.setStateCallback(this::onFlightControllerState);
+                FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
                 callback.onLogMessage("FlightController ready.");
             } else {
                 callback.onLogMessage("FlightController unavailable.");
@@ -219,6 +229,8 @@ public class WaypointMissionController {
             return;
         }
 
+        recordHomePointFromCurrentLocation();
+
         // ── Already airborne — skip takeoff, go straight to mission ───────────
         if (flightController.getState() != null
                 && flightController.getState().isFlying()) {
@@ -260,6 +272,7 @@ public class WaypointMissionController {
      */
     private void enableVirtualStickAndBegin() {
         isTakingOff = false;
+        setAircraftHomeToRecordedPoint();
 
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) {
@@ -299,7 +312,9 @@ public class WaypointMissionController {
         missionRunning = false;
         isTakingOff    = false;
         isDwelling     = false;
+        returnHomePending = false;
         cancelCountdown();
+        cancelReturnHomeDelay();
         stopControlLoop();
 
         if (flightLogger != null) {
@@ -334,17 +349,19 @@ public class WaypointMissionController {
      * Call from VirtualStickWaypointView.onDetachedFromWindow().
      */
     public void onDetached() {
-        if (missionRunning || isTakingOff) {
+        if (missionRunning || isTakingOff || returnHomePending) {
             missionRunning = false;
             isTakingOff    = false;
             isDwelling     = false;
+            returnHomePending = false;
             cancelCountdown();
+            cancelReturnHomeDelay();
             stopControlLoop();
             sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) flightLogger.stop();
         }
         if (flightController != null) {
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
             flightController.setVirtualStickModeEnabled(false, null);
         }
     }
@@ -425,6 +442,10 @@ public class WaypointMissionController {
      * Otherwise: compute distance + bearing, run PD controller, send command.
      */
     private void runControlStep() {
+        if (returnHomePending) {
+            sendVelocityCommand(0, 0, 0f, 0);
+            return;
+        }
         if (!missionRunning || !hasValidGPS) return;
         if (currentWaypointIndex >= store.size()) return;
 
@@ -574,19 +595,17 @@ public class WaypointMissionController {
         currentWaypointIndex++;
 
         if (currentWaypointIndex >= store.size()) {
-            callback.onLogMessage("All waypoints complete. Initiating RTH.");
             missionRunning = false;
-            stopControlLoop();
             sendVelocityCommand(0, 0, 0f, 0);
             if (flightLogger != null) {
                 flightLogger.stop();
                 callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
             }
             if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
-                finishOfflineDebugMission();
+                holdBeforeReturnHome(this::finishOfflineDebugMission);
                 return;
             }
-            triggerRTH();
+            holdBeforeReturnHome(this::triggerRTH);
             return;
         }
 
@@ -657,18 +676,104 @@ public class WaypointMissionController {
 
     private void triggerRTH() {
         if (flightController == null) return;
-        flightController.setVirtualStickModeEnabled(false, error ->
-                flightController.startGoHome(rthError -> {
-                    if (rthError == null) {
-                        mainHandler.post(() -> {
-                            callback.onLogMessage("RTH initiated successfully.");
-                            callback.onStatusChanged("Mission: RTH");
-                            callback.onMissionActiveChanged(false);
-                        });
-                    } else {
-                        callback.onLogMessage("RTH failed: " + rthError.getDescription());
-                    }
-                }));
+        flightController.setVirtualStickModeEnabled(false, error -> {
+            if (error != null) {
+                callback.onLogMessage("Error disabling Virtual Stick: " + error.getDescription());
+            }
+            setHomeThenStartGoHome();
+        });
+    }
+
+    private void holdBeforeReturnHome(Runnable returnHomeAction) {
+        returnHomePending = true;
+        sendVelocityCommand(0, 0, 0f, 0);
+
+        callback.onLogMessage(String.format(
+                "All waypoints complete. Holding for %.0f seconds before RTH.",
+                FINAL_RTH_DELAY_MS / 1000.0));
+        if (hasHomePoint) {
+            callback.onLogMessage(String.format(
+                    "RTH home point: %.6f, %.6f", homeLat, homeLng));
+        }
+
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Mission: HOLDING FOR RTH (5s)");
+            callback.onMissionActiveChanged(true);
+            callback.onTargetLabelChanged("Target: home");
+        });
+
+        cancelReturnHomeDelay();
+        returnHomeRunnable = () -> {
+            returnHomePending = false;
+            stopControlLoop();
+            returnHomeAction.run();
+        };
+        mainHandler.postDelayed(returnHomeRunnable, FINAL_RTH_DELAY_MS);
+    }
+
+    private void cancelReturnHomeDelay() {
+        if (returnHomeRunnable != null) {
+            mainHandler.removeCallbacks(returnHomeRunnable);
+            returnHomeRunnable = null;
+        }
+    }
+
+    private void recordHomePointFromCurrentLocation() {
+        if (!hasValidGPS) return;
+        homeLat = currentLat;
+        homeLng = currentLng;
+        hasHomePoint = true;
+        callback.onLogMessage(String.format(
+                "Home point recorded from takeoff/start position: %.6f, %.6f",
+                homeLat, homeLng));
+    }
+
+    private void setAircraftHomeToRecordedPoint() {
+        if (flightController == null || !hasHomePoint) return;
+        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
+        flightController.setHomeLocation(homePoint, error -> {
+            if (error == null) {
+                callback.onLogMessage("Aircraft home location set to recorded takeoff/start point.");
+            } else {
+                callback.onLogMessage("Home location update failed: "
+                        + error.getDescription()
+                        + ". RTH will use the aircraft's current home point if needed.");
+            }
+        });
+    }
+
+    private void setHomeThenStartGoHome() {
+        if (flightController == null) return;
+        if (!hasHomePoint) {
+            startGoHome();
+            return;
+        }
+
+        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
+        flightController.setHomeLocation(homePoint, error -> {
+            if (error == null) {
+                callback.onLogMessage("Home location confirmed for RTH.");
+            } else {
+                callback.onLogMessage("Could not confirm recorded home before RTH: "
+                        + error.getDescription()
+                        + ". Starting RTH with aircraft home point.");
+            }
+            startGoHome();
+        });
+    }
+
+    private void startGoHome() {
+        flightController.startGoHome(rthError -> {
+            if (rthError == null) {
+                mainHandler.post(() -> {
+                    callback.onLogMessage("RTH initiated successfully.");
+                    callback.onStatusChanged("Mission: RTH");
+                    callback.onMissionActiveChanged(false);
+                });
+            } else {
+                callback.onLogMessage("RTH failed: " + rthError.getDescription());
+            }
+        });
     }
 
     // =========================================================================
@@ -760,7 +865,9 @@ public class WaypointMissionController {
         previousDistance     = 0.0;
         isTakingOff          = false;
         isDwelling           = false;
+        returnHomePending    = false;
         cancelCountdown();
+        cancelReturnHomeDelay();
     }
 
     private String buildTargetLabel() {

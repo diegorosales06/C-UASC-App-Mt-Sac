@@ -6,6 +6,7 @@ import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.R;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ModuleVerificationUtil;
 import com.dji.sdk.sample.internal.view.BaseThreeBtnView;
 
@@ -22,6 +23,16 @@ import dji.sdk.products.Aircraft;
 public class CompassCalibrationView extends BaseThreeBtnView {
 
     private Compass compass;
+    private final FlightControllerStateDispatcher.Listener flightStateListener = state -> {
+        if (null != compass) {
+            String description =
+                "CalibrationStatus: " + compass.getCalibrationState() + "\n"
+                + "Heading: " + compass.getHeading() + "\n"
+                + "isCalibrating: " + compass.isCalibrating() + "\n";
+
+            changeDescription(description);
+        }
+    };
 
     public CompassCalibrationView(Context context) {
         super(context);
@@ -35,19 +46,7 @@ public class CompassCalibrationView extends BaseThreeBtnView {
             FlightController flightController =
                 ((Aircraft) DJISampleApplication.getProductInstance()).getFlightController();
 
-            flightController.setStateCallback(new FlightControllerState.Callback() {
-                @Override
-                public void onUpdate(@NonNull FlightControllerState djiFlightControllerCurrentState) {
-                    if (null != compass) {
-                        String description =
-                            "CalibrationStatus: " + compass.getCalibrationState() + "\n"
-                            + "Heading: " + compass.getHeading() + "\n"
-                            + "isCalibrating: " + compass.isCalibrating() + "\n";
-
-                        changeDescription(description);
-                    }
-                }
-            });
+            FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
             if (ModuleVerificationUtil.isCompassAvailable()) {
                 compass = flightController.getCompass();
             }
@@ -58,7 +57,7 @@ public class CompassCalibrationView extends BaseThreeBtnView {
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         if(ModuleVerificationUtil.isFlightControllerAvailable()) {
-            ((Aircraft) DJISampleApplication.getProductInstance()).getFlightController().setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
     }
 

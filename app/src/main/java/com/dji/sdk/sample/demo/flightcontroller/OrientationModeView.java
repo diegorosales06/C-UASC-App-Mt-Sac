@@ -6,6 +6,7 @@ import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.R;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ModuleVerificationUtil;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 import com.dji.sdk.sample.internal.view.BaseThreeBtnView;
@@ -26,6 +27,11 @@ public class OrientationModeView extends BaseThreeBtnView {
     private FlightController flightController;
 
     private String orientationMode;
+    private final FlightControllerStateDispatcher.Listener flightStateListener = state -> {
+        orientationMode = state.getOrientationMode().name();
+        changeDescription("Current Orientation Mode is" + "\n" +
+                              orientationMode);
+    };
 
     public OrientationModeView(Context context) {
         super(context);
@@ -38,14 +44,7 @@ public class OrientationModeView extends BaseThreeBtnView {
         if (ModuleVerificationUtil.isFlightControllerAvailable()) {
             flightController = DJISampleApplication.getAircraftInstance().getFlightController();
 
-            flightController.setStateCallback(new FlightControllerState.Callback() {
-                @Override
-                public void onUpdate(@NonNull FlightControllerState flightControllerState) {
-                    orientationMode = flightControllerState.getOrientationMode().name();
-                    changeDescription("Current Orientation Mode is" + "\n" +
-                                          orientationMode);
-                }
-            });
+            FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
         }
     }
 
@@ -55,7 +54,7 @@ public class OrientationModeView extends BaseThreeBtnView {
 
         if(ModuleVerificationUtil.isFlightControllerAvailable()) {
             flightController = DJISampleApplication.getAircraftInstance().getFlightController();
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
     }
 

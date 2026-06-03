@@ -19,6 +19,7 @@ import com.dji.sdk.sample.R;
 import com.dji.sdk.sample.internal.OnScreenJoystickListener;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.DialogUtils;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ModuleVerificationUtil;
 import com.dji.sdk.sample.internal.utils.OnScreenJoystick;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
@@ -76,6 +77,8 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
     private FlightController flightController = null;
     private Simulator simulator = null;
     private FlightControllerState latestFlightControllerState = null;
+    private final FlightControllerStateDispatcher.Listener flightStateListener =
+            state -> latestFlightControllerState = state;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public VirtualStickView(Context context) {
@@ -174,7 +177,7 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
             flightController = ModuleVerificationUtil.getFlightController();
         }
         if (flightController != null) {
-            flightController.setStateCallback(state -> latestFlightControllerState = state);
+            FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
         }
 
         if (simulator != null) {
@@ -256,7 +259,7 @@ public class VirtualStickView extends RelativeLayout implements View.OnClickList
             simulator.setStateCallback(null);
         }
         if (flightController != null) {
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
         screenJoystickLeft.setJoystickListener(null);
         screenJoystickRight.setJoystickListener(null);

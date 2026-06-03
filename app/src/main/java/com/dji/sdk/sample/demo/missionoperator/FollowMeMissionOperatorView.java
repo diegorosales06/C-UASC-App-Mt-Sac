@@ -7,6 +7,7 @@ import com.dji.sdk.sample.R;
 import android.util.Log;
 import com.dji.sdk.sample.demo.missionmanager.MissionBaseView;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 
 import org.jetbrains.annotations.NotNull;
@@ -44,6 +45,24 @@ public class FollowMeMissionOperatorView extends MissionBaseView {
     private FlightController flightController = null;
     private FollowMeMission mission = null;
     private FollowMeMissionOperatorListener listener;
+    private final FlightControllerStateDispatcher.Listener flightStateListener = flightControllerState -> {
+        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
+        latitude = flightControllerState.getHomeLocation().getLatitude();
+        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
+        longitude = flightControllerState.getHomeLocation().getLongitude();
+        flightState = flightControllerState.getFlightMode();
+
+        if (flightControllerState.isLandingConfirmationNeeded() && flightController != null) {
+            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
+                @Override
+                public void onResult(DJIError djiError) {
+                    ToastUtils.setResultToToast(djiError == null ? "confirmLanding OK" : djiError.getDescription());
+                }
+            });
+        }
+
+        updateFollowMeMissionState();
+    };
 
     public FollowMeMissionOperatorView(Context context) {
         super(context);
@@ -62,27 +81,7 @@ public class FollowMeMissionOperatorView extends MissionBaseView {
                 flightController = ((Aircraft) product).getFlightController();
             }
             if (flightController != null) {
-                flightController.setStateCallback(new FlightControllerState.Callback() {
-                    @Override
-                    public void onUpdate(@NonNull FlightControllerState flightControllerState) {
-                        homeLatitude = flightControllerState.getHomeLocation().getLatitude();
-                        latitude = flightControllerState.getHomeLocation().getLatitude();
-                        homeLongitude = flightControllerState.getHomeLocation().getLongitude();
-                        longitude = flightControllerState.getHomeLocation().getLongitude();
-                        flightState = flightControllerState.getFlightMode();
-
-                        if (flightControllerState.isLandingConfirmationNeeded()) {
-                            flightController.confirmLanding(new CommonCallbacks.CompletionCallback() {
-                                @Override
-                                public void onResult(DJIError djiError) {
-                                    ToastUtils.setResultToToast(djiError == null ? "confirmLanding OK" : djiError.getDescription());
-                                }
-                            });
-                        }
-
-                        updateFollowMeMissionState();
-                    }
-                });
+                FlightControllerStateDispatcher.addListener(flightController, flightStateListener);
             }
         }
         followMeMissionOperator = MissionControl.getInstance().getFollowMeMissionOperator();
@@ -94,7 +93,7 @@ public class FollowMeMissionOperatorView extends MissionBaseView {
         tearDownListener();
         if (flightController != null) {
             flightController.getSimulator().stop(null);
-            flightController.setStateCallback(null);
+            FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
         super.onDetachedFromWindow();
     }
