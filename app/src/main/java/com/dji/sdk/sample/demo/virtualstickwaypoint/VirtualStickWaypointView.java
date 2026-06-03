@@ -22,6 +22,7 @@ import java.util.List;
 /**
  * VirtualStickWaypointView
  *
+ * Entry point for the DemoList — the class DemoListView.java points to.
  * Entry point for the DemoList — this is the class DemoListView.java points to.
  *
  * Responsibilities (this file only):
@@ -31,6 +32,13 @@ import java.util.List;
  *   - Launch QrWaypointScanActivity and forward the scanned payload to WaypointStore.
  *
  * No navigation math, no mission logic, no DJI SDK calls live here.
+ *
+ * File map:
+ *   WaypointMissionController  — mission state machine, control loop, dwell, RTH
+ *   WaypointStore              — waypoint list, SharedPrefs persistence, QR parsing
+ *   WaypointNavigationMath     — haversine, bearing, coordinate conversion
+ *   TuningPanel                — PD parameter UI and SharedPrefs persistence
+ *   MissionCallback            — interface connecting controller → view
  * To change flight behaviour edit WaypointMissionController.
  * To change stored waypoints edit WaypointStore.
  * To change PD parameters edit TuningPanel.
@@ -42,6 +50,8 @@ public class VirtualStickWaypointView extends LinearLayout
     private static final String TAG = "VSWaypointView";
 
     // ── Collaborators ─────────────────────────────────────────────────────────
+    private WaypointStore             store;
+    private TuningPanel               tuning;
     private WaypointStore            store;
     private TuningPanel              tuning;
     private WaypointMissionController controller;
@@ -83,14 +93,52 @@ public class VirtualStickWaypointView extends LinearLayout
     // =========================================================================
 
     @Override
-    public int getDescription() {
-        return 0;
-    }
+    public int getDescription() { return 0; }
 
     @NonNull
     @Override
-    public String getHint() {
-        return this.getClass().getSimpleName() + ".java";
+    public String getHint() { return this.getClass().getSimpleName() + ".java"; }
+
+    // =========================================================================
+    // MissionCallback implementation
+    // All methods are already called on the main thread by the controller.
+    // =========================================================================
+
+    @Override
+    public void onStatusChanged(String status) {
+        tvStatus.setText(status);
+    }
+
+    @Override
+    public void onTargetLabelChanged(String label) {
+        tvCurrentWaypoint.setText(label);
+    }
+
+    @Override
+    public void onLogMessage(String message) {
+        post(() -> {
+            tvLog.append(message + "\n");
+            scrollLog.post(() -> scrollLog.fullScroll(View.FOCUS_DOWN));
+        });
+    }
+
+    @Override
+    public void onMissionActiveChanged(boolean missionActive) {
+        btnStart.setEnabled(!missionActive);
+        btnStop.setEnabled(missionActive);
+        btnAddWaypoint.setEnabled(!missionActive);
+        btnImportQr.setEnabled(!missionActive);
+        btnEditWaypoint.setEnabled(!missionActive);
+        btnClearWaypoints.setEnabled(!missionActive);
+        if (!missionActive) {
+            tvCurrentWaypoint.setText("Target: —");
+        }
+    }
+
+    @Override
+    public void onTelemetryUpdated(String positionLabel, String speedLabel) {
+        tvDronePos.setText(positionLabel);
+        tvDroneSpeed.setText(speedLabel);
     }
 
     // =========================================================================
@@ -143,6 +191,9 @@ public class VirtualStickWaypointView extends LinearLayout
         setOrientation(VERTICAL);
         setPadding(24, 24, 24, 24);
 
+        // ── Collaborators ─────────────────────────────────────────────────────
+        store      = new WaypointStore(context);
+        tuning     = new TuningPanel(context);
         // ── Collaborators — constructed before any UI that reads from them ────
         store   = new WaypointStore(context);
         tuning  = new TuningPanel(context);
@@ -204,9 +255,8 @@ public class VirtualStickWaypointView extends LinearLayout
         etAlt.setText("10");
         etAlt.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
                 | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        LinearLayout.LayoutParams etP3 = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.6f);
-        etAlt.setLayoutParams(etP3);
+        etAlt.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.6f));
         inputRow.addView(etAlt);
 
         addView(inputRow);
@@ -289,7 +339,7 @@ public class VirtualStickWaypointView extends LinearLayout
 
         addView(btnRow2);
 
-        // ── Tuning panel (built by TuningPanel, inserted here) ────────────────
+        // ── Tuning panel ──────────────────────────────────────────────────────
         tuning.setChangeListener((kp, kd, kpV, speed, decel, brakeDist) ->
                 onLogMessage(String.format(
                         "Tuning: Kp=%.2f Kd=%.2f KpV=%.2f speed=%.1f decel=%.2f brakeD=%.1fm",
@@ -348,8 +398,8 @@ public class VirtualStickWaypointView extends LinearLayout
             showToast("QR scanner needs an activity context.");
             return;
         }
-        QrWaypointScanActivity.setResultListener(payload ->
-                post(() -> handleWaypointQrPayload(payload)));
+        QrWaypointScanActivity.setResultListener(
+                payload -> post(() -> handleWaypointQrPayload(payload)));
         ctx.startActivity(new Intent(ctx, QrWaypointScanActivity.class));
         onLogMessage("Waypoint QR scanner opened.");
     }
@@ -423,9 +473,9 @@ public class VirtualStickWaypointView extends LinearLayout
         editor.setOrientation(VERTICAL);
         editor.setPadding(32, 16, 32, 0);
 
-        EditText latInput = buildCoordinateEditor("Latitude",   String.format("%.7f", wp[0]));
-        EditText lngInput = buildCoordinateEditor("Longitude",  String.format("%.7f", wp[1]));
-        EditText altInput = buildAltitudeEditor("Altitude (m)", String.format("%.1f",  wp[2]));
+        EditText latInput = buildEditorField("Latitude",   String.format("%.7f", wp[0]), true);
+        EditText lngInput = buildEditorField("Longitude",  String.format("%.7f", wp[1]), true);
+        EditText altInput = buildEditorField("Altitude (m)", String.format("%.1f", wp[2]), false);
 
         editor.addView(latInput);
         editor.addView(lngInput);
@@ -485,22 +535,14 @@ public class VirtualStickWaypointView extends LinearLayout
         tvWaypointList.setText(sb.toString());
     }
 
-    private EditText buildCoordinateEditor(String hint, String value) {
+    private EditText buildEditorField(String hint, String value, boolean signed) {
         EditText et = new EditText(getContext());
         et.setHint(hint);
         et.setText(value);
-        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
-                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
-        return et;
-    }
-
-    private EditText buildAltitudeEditor(String hint, String value) {
-        EditText et = new EditText(getContext());
-        et.setHint(hint);
-        et.setText(value);
-        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
-                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        int inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL;
+        if (signed) inputType |= android.text.InputType.TYPE_NUMBER_FLAG_SIGNED;
+        et.setInputType(inputType);
         return et;
     }
 

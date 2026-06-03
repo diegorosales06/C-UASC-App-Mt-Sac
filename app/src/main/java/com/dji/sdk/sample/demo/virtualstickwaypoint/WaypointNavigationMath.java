@@ -24,6 +24,22 @@ public final class WaypointNavigationMath {
     /** Mean radius of the Earth in meters (WGS-84 approximation). */
     public static final double EARTH_RADIUS_M = 6_371_000.0;
 
+    // ── Acceptance thresholds ─────────────────────────────────────────────────
+
+    /**
+     * Horizontal acceptance radius in meters.
+     * When haversineDistance to the target waypoint drops below this value the
+     * drone is considered to have "reached" the waypoint horizontally.
+     */
+    public static final double ACCEPTANCE_RADIUS_M = 0.1;
+
+    /**
+     * Vertical acceptance threshold in meters.
+     * When |targetAlt - currentAlt| drops below this value the drone is
+     * considered to be at the correct altitude for the current waypoint.
+     */
+    public static final double ALTITUDE_ACCEPTANCE_M = 0.5;
+
     // ── Offline debug helpers ─────────────────────────────────────────────────
 
     /**

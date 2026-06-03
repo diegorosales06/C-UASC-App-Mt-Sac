@@ -16,51 +16,67 @@ import java.util.List;
  * Single source of truth for the waypoint list.
  *
  * Responsibilities:
- *   - Owns and exposes the List<double[]> of waypoints (each entry is {lat, lng, altMeters}).
+ *   - Owns and exposes the List<double[]> of waypoints ({lat, lng, altMeters}).
  *   - Persists waypoints to SharedPreferences so they survive app restarts.
- *   - On first launch (no saved data) loads a set of default CSULA field waypoints via loadDefaults().
- *   - Parses QR code payloads (JSON object, JSON array, or plain-text CSV) into waypoints.
+ *   - On first launch, migrates any existing data from MissionMapDataStore's
+ *     "mission_map_prefs" Long-bits format into this store's "vsw_waypoint_prefs"
+ *     JSON format so no previously saved waypoints are lost during the transition.
+ *   - If no saved or legacy data exists, loads 7 default CSULA field waypoints.
+ *   - Parses QR code payloads (JSON object, JSON array, plain-text CSV).
  *   - Validates all incoming coordinate data before it enters the list.
  *
- * This class has no UI dependencies and no DJI SDK dependencies.
- * It can be instantiated by VirtualStickWaypointView and passed to WaypointMissionController.
+ * Load priority on construction:
+ *   1. "vsw_waypoint_prefs" (JSON format)        — use if found
+ *   2. "mission_map_prefs"  (MissionMapDataStore) — migrate if found
+ *   3. loadDefaults()                             — 7 CSULA waypoints
+ *
+ * No UI dependencies. No DJI SDK dependencies.
+ * Used by: VirtualStickWaypointView, WaypointMissionController, MapTrackingView.
  */
 public class WaypointStore {
 
-    // ---------------------------------------------------------------------------------
-    // SharedPreferences keys
-    // ---------------------------------------------------------------------------------
+    // ── New SharedPreferences (JSON format) ───────────────────────────────────
+    private static final String PREFS_NAME    = "vsw_waypoint_prefs";
+    private static final String KEY_WAYPOINTS = "waypoints_json";
 
-    private static final String PREFS_NAME     = "vsw_waypoint_prefs";
-    private static final String KEY_WAYPOINTS  = "waypoints_json";
+    // ── Legacy SharedPreferences keys (MissionMapDataStore format) ────────────
+    // Read-only — used only during one-time migration. Never written by this class.
+    private static final String LEGACY_PREFS_NAME = "mission_map_prefs";
+    private static final String LEGACY_KEY_COUNT  = "vs_waypoint_count";
+    private static final String LEGACY_KEY_LAT    = "vs_waypoint_lat_";
+    private static final String LEGACY_KEY_LNG    = "vs_waypoint_lng_";
+    private static final String LEGACY_KEY_ALT    = "vs_waypoint_alt_";
 
-    // ---------------------------------------------------------------------------------
-    // State
-    // ---------------------------------------------------------------------------------
-
+    // ── State ─────────────────────────────────────────────────────────────────
     private final List<double[]> waypointList = new ArrayList<>();
     private final Context context;
 
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
     // Constructor
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
 
     /**
      * Creates a WaypointStore and immediately loads persisted waypoints.
-     * If no waypoints have ever been saved, falls back to loadDefaults().
      *
-     * @param context Application or Activity context used for SharedPreferences access.
+     * Load order:
+     *   1. Try "vsw_waypoint_prefs" (this store's JSON format).
+     *   2. Try migrating from "mission_map_prefs" (MissionMapDataStore legacy format).
+     *   3. Fall back to loadDefaults() — 7 CSULA waypoints.
+     *
+     * @param context Application or Activity context.
      */
     public WaypointStore(Context context) {
         this.context = context.getApplicationContext();
         if (!loadFromPrefs()) {
-            loadDefaults();
+            if (!migrateFromLegacyPrefs()) {
+                loadDefaults();
+            }
         }
     }
 
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
     // Public list accessors
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
 
     /** Returns an unmodifiable view of the current waypoint list. */
     public List<double[]> getWaypoints() {
@@ -218,9 +234,62 @@ public class WaypointStore {
         }
     }
 
+    // =========================================================================
+    // Migration — from MissionMapDataStore's Long-bits format
+    // =========================================================================
+
     /**
-     * Populates the waypoint list with the default CSULA competition field waypoints.
-     * Only called on first launch when no previously saved waypoints exist.
+     * One-time migration from MissionMapDataStore's "mission_map_prefs" format.
+     *
+     * MissionMapDataStore encodes doubles as raw Long bits:
+     *   Double.longBitsToDouble(prefs.getLong("vs_waypoint_lat_0", 0L))
+     *
+     * Reads those values, imports them into WaypointStore's JSON format, and
+     * persists. Does NOT delete the legacy prefs — MissionMapDataStore may still
+     * be used by other parts of the app.
+     *
+     * After this runs once, "vsw_waypoint_prefs" will be populated and
+     * loadFromPrefs() will succeed on all future launches, so this method
+     * will never be called again.
+     *
+     * @return true if at least one waypoint was migrated successfully.
+     */
+    private boolean migrateFromLegacyPrefs() {
+        SharedPreferences legacyPrefs = context.getSharedPreferences(
+                LEGACY_PREFS_NAME, Context.MODE_PRIVATE);
+        int count = legacyPrefs.getInt(LEGACY_KEY_COUNT, -1);
+        if (count <= 0) return false;
+
+        List<double[]> migrated = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            double lat  = Double.longBitsToDouble(
+                    legacyPrefs.getLong(LEGACY_KEY_LAT + i, 0L));
+            double lng  = Double.longBitsToDouble(
+                    legacyPrefs.getLong(LEGACY_KEY_LNG + i, 0L));
+            float  alt  = (float) Double.longBitsToDouble(
+                    legacyPrefs.getLong(LEGACY_KEY_ALT + i,
+                            Double.doubleToRawLongBits(10.0)));
+            try {
+                migrated.add(validateWaypoint(lat, lng, alt));
+            } catch (IllegalArgumentException ignored) {
+                // Skip any corrupt entries from the legacy store.
+            }
+        }
+
+        if (migrated.isEmpty()) return false;
+
+        waypointList.addAll(migrated);
+        saveToPrefs(); // write into new JSON format immediately
+        return true;
+    }
+
+    // =========================================================================
+    // Default waypoints
+    // =========================================================================
+
+    /**
+     * Loads 7 default CSULA competition field waypoints.
+     * Only called on first-ever launch when no saved or legacy data exists.
      * Persists immediately so these become the "last saved" state.
      */
     private void loadDefaults() {
@@ -342,13 +411,10 @@ public class WaypointStore {
     private double[] parseWaypointTextLine(String line) {
         String[] columns = line.split(",");
         for (int i = 0; i < columns.length; i++) columns[i] = columns[i].trim();
-
         if (columns.length < 2) {
             throw new IllegalArgumentException("Waypoint QR lines need latitude and longitude.");
         }
-
         int latIndex, lngIndex, altIndex;
-
         if (isNumeric(columns[0])) {
             latIndex = 0; lngIndex = 1; altIndex = 2;
         } else if (columns.length >= 4 && !isNumeric(columns[1])) {
@@ -373,18 +439,21 @@ public class WaypointStore {
         }
     }
 
-    // ---------------------------------------------------------------------------------
-    // Validation helpers
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
+    // Validation
+    // =========================================================================
 
     private void validateWaypointQrType(String type) {
         String t = type == null ? "" : type.trim().toUpperCase();
-        if (t.isEmpty() || t.equals("WAYPOINTS") || t.equals("WAYPOINT") || t.equals("VS_WAYPOINTS")) return;
+        if (t.isEmpty() || t.equals("WAYPOINTS") || t.equals("WAYPOINT")
+                || t.equals("VS_WAYPOINTS")) return;
         if (t.equals("PACKAGE_DROP") || t.equals("DROP_TARGET")) {
-            throw new IllegalArgumentException("This QR contains a package drop target, not waypoints.");
+            throw new IllegalArgumentException(
+                    "This QR contains a package drop target, not waypoints.");
         }
         if (t.equals("TIME_TRIAL") || t.equals("CIRCUIT_TIME_TRIAL")) {
-            throw new IllegalArgumentException("This QR contains a time trial route, not waypoints.");
+            throw new IllegalArgumentException(
+                    "This QR contains a time trial route, not waypoints.");
         }
         throw new IllegalArgumentException("This QR is not a waypoint QR.");
     }
@@ -408,9 +477,9 @@ public class WaypointStore {
         return new double[]{lat, lng, alt};
     }
 
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
     // JSON helpers
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
 
     private double readRequiredJsonDouble(JSONObject object, String... keys) {
         for (String key : keys) {
@@ -426,18 +495,14 @@ public class WaypointStore {
         return defaultValue;
     }
 
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
     // Misc helpers
-    // ---------------------------------------------------------------------------------
+    // =========================================================================
 
     private boolean isNumeric(String value) {
         if (value == null || value.trim().isEmpty()) return false;
-        try {
-            Double.parseDouble(value.trim());
-            return true;
-        } catch (NumberFormatException e) {
-            return false;
-        }
+        try { Double.parseDouble(value.trim()); return true; }
+        catch (NumberFormatException e) { return false; }
     }
 
     private List<double[]> copyWaypoints(List<double[]> source) {

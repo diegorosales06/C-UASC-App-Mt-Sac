@@ -1,0 +1,354 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        html, body, #map {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            background: #e8e5dc;
+            font-family: sans-serif;
+        }
+
+        #load-message {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            color: #555;
+            text-align: center;
+            z-index: 1;
+        }
+
+        .drone-marker {
+            width: 34px;
+            height: 34px;
+            transform-origin: 50% 50%;
+        }
+
+        .drone-marker svg {
+            filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+        }
+
+        .leaflet-control-attribution {
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="load-message">Loading free map tiles...</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    (function () {
+        const IMAGERY_MAX_ZOOM = 20;
+        const STREETS_MAX_ZOOM = 22;
+        const fallbackCenter = [34.04635, -117.84552];
+        let map;
+        let baseLayer;
+        let followDrone = true;
+        let geofenceLayer = null;
+        let missionRouteLayer = null;
+        let circuitRouteLayer = null;
+        let trailLayer = null;
+        let droneMarker = null;
+        let dropMarker = null;
+        let waypointLayer = L.layerGroup();
+        let circuitLayer = L.layerGroup();
+        let geofencePoints = [];
+        let missionWaypoints = [];
+        let circuitPoints = [];
+        let trailPoints = [];
+        let latestDronePoint = null;
+        let latestDroneAltitude = 0;
+        let latestDroneHeading = 0;
+        let latestDroneInside = true;
+        let latestDropPoint = null;
+
+        const imagery = L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            {
+                maxNativeZoom: IMAGERY_MAX_ZOOM,
+                maxZoom: IMAGERY_MAX_ZOOM,
+                attribution: "Imagery: Esri, Vantor, Earthstar Geographics, and the GIS User Community"
+            }
+        );
+
+        const streets = L.tileLayer(
+            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {
+                maxNativeZoom: 19,
+                maxZoom: STREETS_MAX_ZOOM,
+                attribution: "&copy; OpenStreetMap contributors"
+            }
+        );
+
+        function initMapWhenLeafletReady() {
+            if (typeof L === "undefined") {
+                document.getElementById("load-message").textContent =
+                    "Leaflet did not load. Check the device internet connection.";
+                return;
+            }
+
+            map = L.map("map", {
+                center: fallbackCenter,
+                zoom: 18,
+                maxZoom: IMAGERY_MAX_ZOOM,
+                zoomControl: true,
+                attributionControl: true
+            });
+
+            baseLayer = imagery;
+            baseLayer.addTo(map);
+            waypointLayer.addTo(map);
+            circuitLayer.addTo(map);
+            document.getElementById("load-message").style.display = "none";
+        }
+
+        function toLatLng(point) {
+            return [point.lat, point.lng];
+        }
+
+        function makeDroneIcon(headingDegrees, inside) {
+            const color = inside ? "#263746" : "#bd2f2f";
+            const html =
+                "<div class=\"drone-marker\" style=\"transform: rotate(" + headingDegrees + "deg)\">" +
+                "<svg width=\"34\" height=\"34\" viewBox=\"0 0 34 34\" xmlns=\"http://www.w3.org/2000/svg\">" +
+                "<path d=\"M17 2 L29 31 L17 24 L5 31 Z\" fill=\"" + color + "\" stroke=\"white\" stroke-width=\"2\"/>" +
+                "</svg></div>";
+            return L.divIcon({
+                html: html,
+                className: "",
+                iconSize: [34, 34],
+                iconAnchor: [17, 17]
+            });
+        }
+
+        function redrawGeofence() {
+            if (geofenceLayer) {
+                map.removeLayer(geofenceLayer);
+                geofenceLayer = null;
+            }
+            if (geofencePoints.length < 3) {
+                return;
+            }
+            geofenceLayer = L.polygon(geofencePoints.map(toLatLng), {
+                color: "#168260",
+                weight: 2,
+                opacity: 0.95,
+                fillColor: "#168260",
+                fillOpacity: 0.22
+            }).addTo(map);
+        }
+
+        function redrawMissionWaypoints() {
+            waypointLayer.clearLayers();
+            if (missionRouteLayer) {
+                map.removeLayer(missionRouteLayer);
+                missionRouteLayer = null;
+            }
+            missionWaypoints.forEach((point, index) => {
+                L.marker(toLatLng(point), {
+                    title: "Waypoint " + (index + 1)
+                }).bindTooltip(String(index + 1), {
+                    permanent: true,
+                    direction: "center",
+                    className: "waypoint-label"
+                }).addTo(waypointLayer);
+            });
+            if (missionWaypoints.length > 1) {
+                missionRouteLayer = L.polyline(missionWaypoints.map(toLatLng), {
+                    color: "#1f5d96",
+                    weight: 3,
+                    opacity: 0.9
+                }).addTo(map);
+            }
+        }
+
+        function redrawCircuitPoints() {
+            circuitLayer.clearLayers();
+            if (circuitRouteLayer) {
+                map.removeLayer(circuitRouteLayer);
+                circuitRouteLayer = null;
+            }
+            circuitPoints.forEach((point, index) => {
+                L.circleMarker(toLatLng(point), {
+                    radius: 7,
+                    color: "#7e4f9b",
+                    fillColor: "#7e4f9b",
+                    fillOpacity: 0.9
+                }).bindTooltip("C" + (index + 1), {
+                    permanent: true,
+                    direction: "top"
+                }).addTo(circuitLayer);
+            });
+            if (circuitPoints.length > 1) {
+                circuitRouteLayer = L.polyline(circuitPoints.map(toLatLng), {
+                    color: "#7e4f9b",
+                    weight: 3,
+                    opacity: 0.9
+                }).addTo(map);
+            }
+        }
+
+        function redrawTrail() {
+            if (trailLayer) {
+                map.removeLayer(trailLayer);
+                trailLayer = null;
+            }
+            if (trailPoints.length > 1) {
+                trailLayer = L.polyline(trailPoints.map(toLatLng), {
+                    color: "#e67e22",
+                    weight: 4,
+                    opacity: 0.95
+                }).addTo(map);
+            }
+        }
+
+        function redrawDropPoint() {
+            if (dropMarker) {
+                map.removeLayer(dropMarker);
+                dropMarker = null;
+            }
+            if (latestDropPoint) {
+                dropMarker = L.marker(toLatLng(latestDropPoint), {
+                    title: "Drop point"
+                }).addTo(map);
+            }
+        }
+
+        function redrawDrone() {
+            if (!latestDronePoint) {
+                return;
+            }
+            const position = toLatLng(latestDronePoint);
+            const icon = makeDroneIcon(latestDroneHeading, latestDroneInside);
+            if (!droneMarker) {
+                droneMarker = L.marker(position, {
+                    icon: icon,
+                    title: "Drone"
+                }).addTo(map);
+            } else {
+                droneMarker.setLatLng(position);
+                droneMarker.setIcon(icon);
+            }
+            droneMarker.bindTooltip("Alt " + latestDroneAltitude.toFixed(1) + "m", {
+                direction: "top"
+            });
+            if (followDrone) {
+                map.setView(position, Math.max(map.getZoom(), 18), { animate: true });
+            }
+        }
+
+        function collectBoundsPoints() {
+            const points = []
+                .concat(geofencePoints)
+                .concat(missionWaypoints)
+                .concat(circuitPoints)
+                .concat(trailPoints);
+            if (latestDronePoint) {
+                points.push(latestDronePoint);
+            }
+            if (latestDropPoint) {
+                points.push(latestDropPoint);
+            }
+            return points;
+        }
+
+        window.mapAddIn = {
+            setBaseLayer: function (name) {
+                const next = name === "streets" ? streets : imagery;
+                const nextMaxZoom = name === "streets" ? STREETS_MAX_ZOOM : IMAGERY_MAX_ZOOM;
+                if (baseLayer === next) {
+                    map.setMaxZoom(nextMaxZoom);
+                    if (map.getZoom() > nextMaxZoom) {
+                        map.setZoom(nextMaxZoom);
+                    }
+                    return;
+                }
+                if (baseLayer) {
+                    map.removeLayer(baseLayer);
+                }
+                map.setMaxZoom(nextMaxZoom);
+                if (map.getZoom() > nextMaxZoom) {
+                    map.setZoom(nextMaxZoom);
+                }
+                baseLayer = next;
+                baseLayer.addTo(map);
+            },
+
+            setFollow: function (enabled) {
+                followDrone = !!enabled;
+            },
+
+            setGeofence: function (points) {
+                geofencePoints = points || [];
+                redrawGeofence();
+            },
+
+            setMissionWaypoints: function (points) {
+                missionWaypoints = points || [];
+                redrawMissionWaypoints();
+            },
+
+            setCircuitPoints: function (points) {
+                circuitPoints = points || [];
+                redrawCircuitPoints();
+            },
+
+            setDropPoint: function (point) {
+                latestDropPoint = point || null;
+                redrawDropPoint();
+            },
+
+            setTrail: function (points) {
+                trailPoints = points || [];
+                redrawTrail();
+            },
+
+            updateDrone: function (lat, lng, altitude, heading, inside) {
+                latestDronePoint = { lat: lat, lng: lng };
+                latestDroneAltitude = altitude || 0;
+                latestDroneHeading = heading || 0;
+                latestDroneInside = !!inside;
+                trailPoints.push(latestDronePoint);
+                if (trailPoints.length > 500) {
+                    trailPoints.shift();
+                }
+                redrawTrail();
+                redrawDrone();
+            },
+
+            clearTrail: function () {
+                trailPoints = [];
+                redrawTrail();
+            },
+
+            fitAll: function () {
+                const points = collectBoundsPoints();
+                if (!points.length) {
+                    map.setView(fallbackCenter, 19);
+                    return;
+                }
+                if (points.length === 1) {
+                    map.setView(toLatLng(points[0]), 19);
+                    return;
+                }
+                map.fitBounds(L.latLngBounds(points.map(toLatLng)), {
+                    padding: [44, 44],
+                    maxZoom: 18
+                });
+            }
+        };
+
+        initMapWhenLeafletReady();
+    }());
+</script>
+</body>
+</html>

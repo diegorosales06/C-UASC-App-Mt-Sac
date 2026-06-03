@@ -4,6 +4,8 @@ package com.dji.sdk.sample.demo.virtualstickwaypoint;
  * MissionCallback
  *
  * Interface that WaypointMissionController uses to push UI updates back to
+ * VirtualStickWaypointView without holding a direct reference to any widget.
+ * Every method is called on the main thread by the controller.
  * VirtualStickWaypointView without holding a direct reference to any Android
  * widget. Every method is called on the main thread by the controller.
  *
@@ -23,6 +25,7 @@ public interface MissionCallback {
 
     /**
      * Fired whenever the "Target WP" label should be refreshed.
+     * e.g. "Target WP2: (34.048414, -117.837468) @ 3.0m" or "Target: —"
      * The controller passes the fully formatted string so the View just
      * calls tvCurrentWaypoint.setText(label).
      *
@@ -39,6 +42,7 @@ public interface MissionCallback {
     void onLogMessage(String message);
 
     /**
+     * Fired when the enabled/disabled state of mission control buttons changes.
      * Fired when the enabled/disabled state of the mission control buttons
      * needs to change. Called at mission start, stop, RTH, and dwell entry/exit.
      *
@@ -48,6 +52,11 @@ public interface MissionCallback {
     void onMissionActiveChanged(boolean missionActive);
 
     /**
+     * Fired on every control loop tick so the View can update position and
+     * speed labels. Also used by offline debug to push simulated position.
+     *
+     * @param positionLabel e.g. "Drone: (34.048510, -117.837831)  alt: 3.0m"
+     * @param speedLabel    e.g. "Speed: 2.34 m/s"
      * Fired on every control loop tick so the View can clear tvDroneSpeed
      * to "Speed: 0.00 m/s" during dwell and restore it when moving.
      * Also used in offline debug to push simulated position strings.
