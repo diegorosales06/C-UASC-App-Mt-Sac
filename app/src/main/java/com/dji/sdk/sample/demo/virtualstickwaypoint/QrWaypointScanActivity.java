@@ -151,7 +151,7 @@ public class QrWaypointScanActivity extends Activity {
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             createScanner();
         } else {
-            statusText.setText("Camera permission is required to scan waypoint QR codes.");
+            statusText.setText("Camera permission is required to scan QR codes.");
         }
     }
 
@@ -168,7 +168,7 @@ public class QrWaypointScanActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
         statusText = new TextView(this);
-        statusText.setText("Scan waypoint QR");
+        statusText.setText("Scan QR");
         statusText.setTextColor(Color.WHITE);
         statusText.setTextSize(18f);
         statusText.setGravity(Gravity.CENTER);
