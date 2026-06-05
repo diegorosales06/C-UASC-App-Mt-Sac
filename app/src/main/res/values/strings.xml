@@ -13,6 +13,7 @@
     <string name="virtualStickWaypint_mission_title">VS Waypoint Mission</string>
     <string name="time_trial_mission_title">Time Trial Mission</string>
     <string name="target_localization_title">Target Localization</string>
+    <string name="search_record_title">Search &amp; Record</string>
 
     <string name="sdk_version">DJI SDK Version: %1$s</string>
     <string name="hint_firmware_upgrade_in_LDM">Enable firmware upgrade under LDM mode</string>

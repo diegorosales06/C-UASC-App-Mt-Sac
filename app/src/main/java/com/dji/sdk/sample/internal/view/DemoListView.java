@@ -74,6 +74,7 @@ import com.dji.sdk.sample.demo.timetrial.TimeTrialView;
 import com.dji.sdk.sample.demo.drop.PayloadDropMissionView;
 import com.dji.sdk.sample.demo.LEDcontrol.LEDControlView;
 import com.dji.sdk.sample.demo.targetlocalization.TargetLocalizationView;
+import com.dji.sdk.sample.demo.searchrecord.SearchRecordView;
 
 
 
@@ -216,6 +217,7 @@ public class DemoListView extends FrameLayout {
                 new GroupItem(R.string.virtualStickWaypint_mission_title, VirtualStickWaypointView.class),
                 new GroupItem(R.string.time_trial_mission_title, TimeTrialView.class),
                 new GroupItem(R.string.target_localization_title, TargetLocalizationView.class),
+                new GroupItem(R.string.search_record_title, SearchRecordView.class),
 
                 new GroupItem(R.string.payload_drop_mission_title, PayloadDropMissionView.class),
                 new GroupItem(R.string.LED_Control_title, LEDControlView.class)
