@@ -15,6 +15,7 @@ import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 import com.dji.sdk.sample.internal.view.PresentableView;
 import com.dji.sdk.sample.demo.geofencing.FlightLogger;
 
@@ -52,11 +53,13 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     private static final float MAX_HORIZONTAL_SPEED = 5.0f;
     private static final float MIN_HORIZONTAL_SPEED = 0.3f;
     private static final float MAX_VERTICAL_SPEED = 2.0f;
+    private static final float TAKEOFF_STABLE_ALT_M = 1.0f;
     private static final double EARTH_RADIUS_M = 6_371_000.0;
     private static final double ACCEPTANCE_RADIUS_M = 2.0;
     private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
 
     private boolean missionRunning = false;
+    private boolean isTakingOff = false;
     private double dropTargetLat = DropTargetStore.DEFAULT_DROP_LAT;
     private double dropTargetLng = DropTargetStore.DEFAULT_DROP_LNG;
     private float dropTargetAlt = DropTargetStore.DEFAULT_DROP_ALT;
@@ -86,6 +89,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     private EditText etDropAlt;
     private Button btnStart;
     private Button btnStop;
+    private Button btnReturnHome;
     private ScrollView scrollLog;
     private TextView tvLog;
 
@@ -186,10 +190,18 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         btnStop = new Button(context);
         btnStop.setText("Stop Mission");
         LinearLayout.LayoutParams bp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        bp2.setMarginEnd(8);
         btnStop.setLayoutParams(bp2);
         btnStop.setEnabled(false);
         btnStop.setOnClickListener(v -> onStopMission());
         btnRow.addView(btnStop);
+
+        btnReturnHome = new Button(context);
+        btnReturnHome.setText("RTH");
+        btnReturnHome.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f));
+        btnReturnHome.setOnClickListener(v -> requestReturnToHome());
+        btnRow.addView(btnReturnHome);
 
         addView(btnRow);
 
@@ -240,6 +252,12 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         currentLng = lng;
         currentAlt = alt;
         hasValidGPS = true;
+        if (isTakingOff && state.isFlying() && currentAlt >= TAKEOFF_STABLE_ALT_M) {
+            isTakingOff = false;
+            appendLog(String.format("Stable hover reached (%.1fm). Starting drop mission.", currentAlt));
+            post(() -> tvStatus.setText("Mission: STABILIZED"));
+            enableVirtualStickAndBegin();
+        }
         post(() -> tvDronePos.setText(String.format("Drone: (%.6f, %.6f)  alt: %.1fm", lat, lng, alt)));
     }
 
@@ -282,9 +300,50 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
 
         dropTargetSet = true;
         DropTargetStore.save(getContext(), dropTargetLat, dropTargetLng, dropTargetAlt);
+
+        if (flightController.getState() != null && flightController.getState().isFlying()) {
+            appendLog("Drone already airborne - skipping takeoff.");
+            enableVirtualStickAndBegin();
+            return;
+        }
+
+        appendLog("Drone on ground - initiating takeoff.");
+        post(() -> {
+            tvStatus.setText("Mission: TAKING OFF");
+            btnStart.setEnabled(false);
+            btnStop.setEnabled(true);
+        });
+        isTakingOff = true;
+        flightController.startTakeoff(error -> {
+            if (error != null) {
+                isTakingOff = false;
+                appendLog("Takeoff failed: " + error.getDescription());
+                post(() -> {
+                    tvStatus.setText("Mission: IDLE");
+                    btnStart.setEnabled(true);
+                    btnStop.setEnabled(false);
+                });
+                return;
+            }
+            appendLog("Takeoff command accepted. Climbing...");
+        });
+    }
+
+    private void enableVirtualStickAndBegin() {
+        if (flightController == null) return;
         flightController.setVirtualStickModeEnabled(true, error -> {
-            if (error != null) { appendLog("Failed to enable Virtual Stick: " + error.getDescription()); return; }
+            if (error != null) {
+                isTakingOff = false;
+                appendLog("Failed to enable Virtual Stick: " + error.getDescription());
+                post(() -> {
+                    tvStatus.setText("Mission: IDLE");
+                    btnStart.setEnabled(true);
+                    btnStop.setEnabled(false);
+                });
+                return;
+            }
             appendLog("Virtual Stick mode enabled.");
+            isTakingOff = false;
             missionRunning = true;
             hasDropped = false;
             payloadDropController.reset();
@@ -306,6 +365,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
 
     private void onStopMission() {
         missionRunning = false;
+        isTakingOff = false;
         returnHomePending = false;
         cancelReturnHomeDelay();
         stopControlLoop();
@@ -322,6 +382,31 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             btnStop.setEnabled(false);
         });
         appendLog("Mission stopped.");
+    }
+
+    public void requestReturnToHome() {
+        if (flightController == null) {
+            initFlightController();
+            if (flightController == null) {
+                showToast("Flight controller not available.");
+                return;
+            }
+        }
+
+        missionRunning = false;
+        isTakingOff = false;
+        returnHomePending = false;
+        cancelReturnHomeDelay();
+        stopControlLoop();
+        if (flightLogger != null) { flightLogger.stop(); }
+        sendVelocityCommand(0, 0, 0);
+        appendLog("Manual RTH requested.");
+        post(() -> {
+            tvStatus.setText("Mission: RTH REQUESTED");
+            btnStart.setEnabled(true);
+            btnStop.setEnabled(false);
+        });
+        triggerRTH();
     }
 
     private void startControlLoop() {
@@ -389,7 +474,8 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         if (flightController == null) return;
         flightController.setVirtualStickModeEnabled(false, error -> {
             if (error != null) appendLog("Error disabling Virtual Stick: " + error.getDescription());
-            setHomeThenStartGoHome();
+            appendLog("Starting RTH with aircraft's current home point.");
+            startGoHome();
         });
     }
 
@@ -447,28 +533,9 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         });
     }
 
-    private void setHomeThenStartGoHome() {
-        if (flightController == null) return;
-        if (!hasHomePoint) {
-            startGoHome();
-            return;
-        }
-
-        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
-        flightController.setHomeLocation(homePoint, error -> {
-            if (error == null) {
-                appendLog("Home location confirmed for RTH.");
-            } else {
-                appendLog("Could not confirm recorded home before RTH: "
-                        + error.getDescription()
-                        + ". Starting RTH with aircraft home point.");
-            }
-            startGoHome();
-        });
-    }
-
     private void startGoHome() {
-        flightController.startGoHome(rthError -> {
+        ReturnHomeCommand.setGoHomeHeightToCurrentAltitude(flightController, this::appendLog, () ->
+                flightController.startGoHome(rthError -> {
             if (rthError == null) {
                 post(() -> {
                     tvStatus.setText("Mission: RTH");
@@ -479,7 +546,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             } else {
                 appendLog("RTH failed: " + rthError.getDescription());
             }
-        });
+        }));
     }
 
     static double haversineDistance(double lat1, double lng1, double lat2, double lng2) {
@@ -510,8 +577,9 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        if (missionRunning || returnHomePending) {
+        if (missionRunning || isTakingOff || returnHomePending) {
             missionRunning = false;
+            isTakingOff = false;
             returnHomePending = false;
             cancelReturnHomeDelay();
             stopControlLoop();

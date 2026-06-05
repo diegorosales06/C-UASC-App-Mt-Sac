@@ -10,10 +10,15 @@
           android:visible="false"
           app:showAsAction="ifRoom|collapseActionView"
           app:actionViewClass="androidx.appcompat.widget.SearchView"/>
-    <item android:id="@+id/action_hint"
-          android:title="\?"
-          android:orderInCategory="0"
-          app:showAsAction="ifRoom|collapseActionView"
-          android:visible="false"/>
+	    <item android:id="@+id/action_hint"
+	          android:title="\?"
+	          android:orderInCategory="0"
+	          app:showAsAction="ifRoom|collapseActionView"
+	          android:visible="false"/>
+	    <item android:id="@+id/action_rth"
+	          android:title="RTH"
+	          android:orderInCategory="2"
+	          app:showAsAction="always"
+	          android:visible="false"/>
 
 </menu>

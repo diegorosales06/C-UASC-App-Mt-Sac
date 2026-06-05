@@ -75,6 +75,7 @@ public class TimeTrialView extends LinearLayout
     // ── Mission control widgets ───────────────────────────────────────────────
     private Button     btnStart;
     private Button     btnStop;
+    private Button     btnReturnHome;
 
     // ── Log ───────────────────────────────────────────────────────────────────
     private ScrollView scrollLog;
@@ -351,11 +352,20 @@ public class TimeTrialView extends LinearLayout
 
         btnStop = new Button(context);
         btnStop.setText("Stop");
-        btnStop.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams bP6 = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f);
+        bP6.setMarginEnd(8);
+        btnStop.setLayoutParams(bP6);
         btnStop.setEnabled(false);
         btnStop.setOnClickListener(v -> controller.stopMission());
         btnRow2.addView(btnStop);
+
+        btnReturnHome = new Button(context);
+        btnReturnHome.setText("RTH");
+        btnReturnHome.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.7f));
+        btnReturnHome.setOnClickListener(v -> requestReturnToHome());
+        btnRow2.addView(btnReturnHome);
 
         addView(btnRow2);
 
@@ -533,6 +543,10 @@ public class TimeTrialView extends LinearLayout
         store.clearWaypoints();
         refreshGateListDisplay();
         onLogMessage("Gates cleared.");
+    }
+
+    public void requestReturnToHome() {
+        controller.requestReturnToHome();
     }
 
     // =========================================================================

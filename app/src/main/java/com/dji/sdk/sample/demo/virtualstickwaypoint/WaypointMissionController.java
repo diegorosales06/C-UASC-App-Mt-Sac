@@ -9,6 +9,7 @@ import com.dji.sdk.sample.demo.geofencing.FlightLogger;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 
 import java.util.Timer;
 import java.util.TimerTask;
@@ -342,6 +343,50 @@ public class WaypointMissionController {
         });
 
         callback.onLogMessage("Mission stopped by user.");
+    }
+
+    public void requestReturnToHome() {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            missionRunning = false;
+            isTakingOff    = false;
+            isDwelling     = false;
+            returnHomePending = false;
+            cancelCountdown();
+            cancelReturnHomeDelay();
+            stopControlLoop();
+            finishOfflineDebugMission();
+            return;
+        }
+
+        if (flightController == null) {
+            initFlightController();
+            if (flightController == null) {
+                callback.onLogMessage("Flight controller not available.");
+                return;
+            }
+        }
+
+        missionRunning = false;
+        isTakingOff    = false;
+        isDwelling     = false;
+        returnHomePending = false;
+        cancelCountdown();
+        cancelReturnHomeDelay();
+        stopControlLoop();
+
+        if (flightLogger != null) {
+            flightLogger.stop();
+            callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
+        }
+
+        sendVelocityCommand(0, 0, 0f, 0);
+        callback.onLogMessage("Manual RTH requested.");
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Mission: RTH REQUESTED");
+            callback.onMissionActiveChanged(false);
+            callback.onTargetLabelChanged("Target: home");
+        });
+        triggerRTH();
     }
 
     /**
@@ -680,7 +725,8 @@ public class WaypointMissionController {
             if (error != null) {
                 callback.onLogMessage("Error disabling Virtual Stick: " + error.getDescription());
             }
-            setHomeThenStartGoHome();
+            callback.onLogMessage("Starting RTH with aircraft's current home point.");
+            startGoHome();
         });
     }
 
@@ -742,28 +788,9 @@ public class WaypointMissionController {
         });
     }
 
-    private void setHomeThenStartGoHome() {
-        if (flightController == null) return;
-        if (!hasHomePoint) {
-            startGoHome();
-            return;
-        }
-
-        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
-        flightController.setHomeLocation(homePoint, error -> {
-            if (error == null) {
-                callback.onLogMessage("Home location confirmed for RTH.");
-            } else {
-                callback.onLogMessage("Could not confirm recorded home before RTH: "
-                        + error.getDescription()
-                        + ". Starting RTH with aircraft home point.");
-            }
-            startGoHome();
-        });
-    }
-
     private void startGoHome() {
-        flightController.startGoHome(rthError -> {
+        ReturnHomeCommand.setGoHomeHeightToCurrentAltitude(flightController, callback::onLogMessage, () ->
+                flightController.startGoHome(rthError -> {
             if (rthError == null) {
                 mainHandler.post(() -> {
                     callback.onLogMessage("RTH initiated successfully.");
@@ -773,7 +800,7 @@ public class WaypointMissionController {
             } else {
                 callback.onLogMessage("RTH failed: " + rthError.getDescription());
             }
-        });
+        }));
     }
 
     // =========================================================================

@@ -121,8 +121,10 @@ public class TimeTrialTuningPanel {
         tvSpeed = new TextView(context);
         tvSpeed.setTextSize(12f);
         panel.addView(buildTuningRow(context, "Max Speed (m/s)", tvSpeed,
-                () -> { maxHorizontalSpeed = Math.max(1.0f, maxHorizontalSpeed - 0.5f); onChanged(context); },
-                () -> { maxHorizontalSpeed = maxHorizontalSpeed + 0.5f;                 onChanged(context); }));
+                () -> { maxHorizontalSpeed = Math.max(1.0f,  maxHorizontalSpeed - 0.5f); onChanged(context); },
+                // Cap at 15 m/s — the DJI virtual-stick velocity limit. Above this
+                // the SDK rejects the command with "Param illegal" and the drone stops.
+                () -> { maxHorizontalSpeed = Math.min(15.0f, maxHorizontalSpeed + 0.5f); onChanged(context); }));
 
         tvKp = new TextView(context);
         tvKp.setTextSize(12f);

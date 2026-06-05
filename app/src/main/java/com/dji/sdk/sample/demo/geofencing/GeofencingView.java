@@ -18,6 +18,7 @@ import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
 import java.util.ArrayList;
@@ -532,7 +533,8 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     }
 
     private static void startGoHome(FlightController controller, int retriesRemaining) {
-        controller.startGoHome(new CommonCallbacks.CompletionCallback() {
+        ReturnHomeCommand.setGoHomeHeightToCurrentAltitude(controller, GeofencingView::appendActiveLog, () ->
+                controller.startGoHome(new CommonCallbacks.CompletionCallback() {
             @Override
             public void onResult(DJIError djiError) {
                 if (djiError == null) {
@@ -548,7 +550,7 @@ public class GeofencingView extends LinearLayout implements PresentableView {
                             1000L);
                 }
             }
-        });
+        }));
     }
 
     // ---------------------------------------------------------------------------------

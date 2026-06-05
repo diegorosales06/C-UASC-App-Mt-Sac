@@ -61,6 +61,7 @@ public class VirtualStickWaypointView extends LinearLayout
     private Button     btnClearWaypoints;
     private Button     btnStart;
     private Button     btnStop;
+    private Button     btnReturnHome;
     private ScrollView scrollLog;
     private TextView   tvLog;
 
@@ -281,11 +282,20 @@ public class VirtualStickWaypointView extends LinearLayout
 
         btnStop = new Button(context);
         btnStop.setText("Stop Mission");
-        btnStop.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams bP6 = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f);
+        bP6.setMarginEnd(8);
+        btnStop.setLayoutParams(bP6);
         btnStop.setEnabled(false);
         btnStop.setOnClickListener(v -> controller.stopMission());
         btnRow2.addView(btnStop);
+
+        btnReturnHome = new Button(context);
+        btnReturnHome.setText("RTH");
+        btnReturnHome.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.7f));
+        btnReturnHome.setOnClickListener(v -> requestReturnToHome());
+        btnRow2.addView(btnReturnHome);
 
         addView(btnRow2);
 
@@ -463,6 +473,10 @@ public class VirtualStickWaypointView extends LinearLayout
         store.clearWaypoints();
         refreshWaypointListDisplay();
         onLogMessage("Waypoints cleared.");
+    }
+
+    public void requestReturnToHome() {
+        controller.requestReturnToHome();
     }
 
     // =========================================================================

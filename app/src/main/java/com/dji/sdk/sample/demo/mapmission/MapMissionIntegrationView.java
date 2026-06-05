@@ -25,17 +25,23 @@ import com.dji.sdk.sample.demo.timetrial.TimeTrialView;
 import com.dji.sdk.sample.demo.timetrial.TimeTrialWaypointStore;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.VirtualStickWaypointView;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointStore;
+import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
 import java.util.ArrayList;
 import java.util.List;
 
+import dji.common.flightcontroller.FlightControllerState;
 import dji.common.flightcontroller.LocationCoordinate3D;
 import dji.common.model.LocationCoordinate2D;
 import dji.keysdk.DJIKey;
 import dji.keysdk.FlightControllerKey;
 import dji.keysdk.KeyManager;
 import dji.keysdk.callback.KeyListener;
+import dji.sdk.flightcontroller.FlightController;
+import dji.sdk.products.Aircraft;
 
 /**
  * Single field-work screen for mission workflows that share the map workflow:
@@ -68,8 +74,11 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
 
     private TextView tvTitle;
     private TextView tvModeHint;
+    private TextView tvSatelliteCount;
     private MapAddInView mapAddInView;
     private Button btnReloadMap;
+    private Button btnSetHome;
+    private Button btnReturnHome;
     private Button btnMapFence;
     private Button btnVsWaypoint;
     private Button btnDropWaypoint;
@@ -83,6 +92,8 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
     private double latestHeadingDegrees;
     private DJIKey aircraftLocationKey;
     private KeyListener aircraftLocationListener;
+    private final FlightControllerStateDispatcher.Listener flightStateListener =
+            this::onFlightControllerState;
 
     private final Runnable mapRefreshRunnable = new Runnable() {
         @Override
@@ -135,9 +146,48 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(MAP_HEIGHT_DP)));
 
+        LinearLayout mapStatusRow = new LinearLayout(context);
+        mapStatusRow.setOrientation(HORIZONTAL);
+        mapStatusRow.setPadding(0, 8, 0, 4);
+        addView(mapStatusRow);
+
+        tvSatelliteCount = new TextView(context);
+        tvSatelliteCount.setText("Sat: --");
+        tvSatelliteCount.setTextSize(13f);
+        tvSatelliteCount.setTextColor(Color.parseColor("#202124"));
+        tvSatelliteCount.setBackgroundColor(Color.parseColor("#E8F0FE"));
+        tvSatelliteCount.setGravity(android.view.Gravity.CENTER);
+        tvSatelliteCount.setPadding(8, 0, 8, 0);
+        LinearLayout.LayoutParams satParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0.35f);
+        satParams.setMarginEnd(8);
+        mapStatusRow.addView(tvSatelliteCount, satParams);
+
+        btnSetHome = new Button(context);
+        btnSetHome.setText("Set Home");
+        btnSetHome.setAllCaps(false);
+        btnSetHome.setOnClickListener(v -> setCurrentAircraftPositionAsHome());
+        LinearLayout.LayoutParams setHomeParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                0.65f);
+        setHomeParams.setMarginEnd(8);
+        mapStatusRow.addView(btnSetHome, setHomeParams);
+
+        btnReturnHome = new Button(context);
+        btnReturnHome.setText("RTH");
+        btnReturnHome.setAllCaps(false);
+        btnReturnHome.setOnClickListener(v -> requestReturnToHome());
+        mapStatusRow.addView(btnReturnHome, new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                0.35f));
+
         LinearLayout mapActionRow = new LinearLayout(context);
         mapActionRow.setOrientation(HORIZONTAL);
-        mapActionRow.setPadding(0, 8, 0, 8);
+        mapActionRow.setPadding(0, 0, 0, 8);
         addView(mapActionRow);
 
         btnReloadMap = new Button(context);
@@ -148,9 +198,12 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
             mapAddInView.fitAllMapItems();
             mapAddInView.setStatusText("Leaflet overlays reloaded");
         });
-        mapActionRow.addView(btnReloadMap, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams reloadParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f);
+        reloadParams.setMarginEnd(8);
+        mapActionRow.addView(btnReloadMap, reloadParams);
 
         LinearLayout rowOne = new LinearLayout(context);
         rowOne.setOrientation(HORIZONTAL);
@@ -237,6 +290,51 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
         syncModeButtons();
     }
 
+    public void requestReturnToHome() {
+        View child = contentFrame == null || contentFrame.getChildCount() == 0
+                ? null
+                : contentFrame.getChildAt(0);
+
+        if (child instanceof VirtualStickWaypointView) {
+            ((VirtualStickWaypointView) child).requestReturnToHome();
+            mapAddInView.setStatusText("RTH requested from VS waypoint mission");
+            return;
+        }
+        if (child instanceof PayloadDropMissionView) {
+            ((PayloadDropMissionView) child).requestReturnToHome();
+            mapAddInView.setStatusText("RTH requested from drop mission");
+            return;
+        }
+        if (child instanceof TimeTrialView) {
+            ((TimeTrialView) child).requestReturnToHome();
+            mapAddInView.setStatusText("RTH requested from time trial");
+            return;
+        }
+
+        ReturnHomeCommand.start(message -> post(() -> {
+            mapAddInView.setStatusText(message);
+            tvModeHint.setText(message);
+        }));
+    }
+
+    private void setCurrentAircraftPositionAsHome() {
+        Aircraft aircraft = DJISampleApplication.getAircraftInstance();
+        if (aircraft == null || aircraft.getFlightController() == null) {
+            showMapStatus("Flight controller not available.");
+            return;
+        }
+
+        FlightController flightController = aircraft.getFlightController();
+        showMapStatus("Setting home to current drone position...");
+        flightController.setHomeLocationUsingAircraftCurrentLocation(error -> {
+            if (error == null) {
+                showMapStatus("Home set to current drone position.");
+            } else {
+                showMapStatus("Set home failed: " + error.getDescription());
+            }
+        });
+    }
+
     private void refreshMapOverlays() {
         if (mapAddInView == null) return;
 
@@ -319,6 +417,33 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
         }
         aircraftLocationListener = null;
         aircraftLocationKey = null;
+    }
+
+    private void startFlightStateTelemetry() {
+        Aircraft aircraft = DJISampleApplication.getAircraftInstance();
+        if (aircraft == null || aircraft.getFlightController() == null) {
+            updateSatelliteCount(null);
+            return;
+        }
+        FlightControllerStateDispatcher.addListener(
+                aircraft.getFlightController(),
+                flightStateListener);
+    }
+
+    private void stopFlightStateTelemetry() {
+        FlightControllerStateDispatcher.removeListener(flightStateListener);
+    }
+
+    private void onFlightControllerState(FlightControllerState state) {
+        updateSatelliteCount(state);
+    }
+
+    private void updateSatelliteCount(FlightControllerState state) {
+        if (tvSatelliteCount == null) return;
+        String label = state == null
+                ? "Sat: --"
+                : "Sat: " + state.getSatelliteCount();
+        post(() -> tvSatelliteCount.setText(label));
     }
 
     private void handleAircraftLocation(Object value) {
@@ -405,12 +530,24 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    private void showMapStatus(String message) {
+        post(() -> {
+            if (mapAddInView != null) {
+                mapAddInView.setStatusText(message);
+            }
+            if (tvModeHint != null) {
+                tvModeHint.setText(message);
+            }
+        });
+    }
+
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         mapAddInView.onResume();
         refreshMapOverlays();
         startAircraftLocationTelemetry();
+        startFlightStateTelemetry();
         mainHandler.removeCallbacks(mapRefreshRunnable);
         mainHandler.postDelayed(mapRefreshRunnable, MAP_REFRESH_MS);
     }
@@ -419,6 +556,7 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
     protected void onDetachedFromWindow() {
         mainHandler.removeCallbacks(mapRefreshRunnable);
         stopAircraftLocationTelemetry();
+        stopFlightStateTelemetry();
         if (mapAddInView != null) {
             mapAddInView.onPause();
             mapAddInView.onDestroy();

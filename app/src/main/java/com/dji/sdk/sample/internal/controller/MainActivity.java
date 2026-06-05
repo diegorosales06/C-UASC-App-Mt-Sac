@@ -24,12 +24,19 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SearchView;
 
 import com.dji.sdk.sample.R;
+import com.dji.sdk.sample.demo.drop.PayloadDropMissionView;
+import com.dji.sdk.sample.demo.mapmission.MapMissionIntegrationView;
+import com.dji.sdk.sample.demo.timetrial.TimeTrialView;
+import com.dji.sdk.sample.demo.virtualstickwaypoint.VirtualStickWaypointView;
+import com.dji.sdk.sample.demo.waypoint.WaypointMissionView;
 import com.dji.sdk.sample.internal.model.ViewWrapper;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 import com.dji.sdk.sample.internal.utils.ToastUtils;
 import com.dji.sdk.sample.internal.view.DemoListView;
 import com.dji.sdk.sample.internal.view.PresentableView;
 import com.squareup.otto.Subscribe;
 
+import java.util.Locale;
 import java.util.Stack;
 
 import dji.sdk.base.BaseProduct;
@@ -49,6 +56,7 @@ public class MainActivity extends AppCompatActivity {
     private SearchView searchView;
     private MenuItem searchViewItem;
     private MenuItem hintItem;
+    private MenuItem returnHomeItem;
 
     //region Life-cycle
     @Override
@@ -77,6 +85,7 @@ public class MainActivity extends AppCompatActivity {
         SearchManager searchManager = (SearchManager) getSystemService(Context.SEARCH_SERVICE);
         searchViewItem = menu.findItem(R.id.action_search);
         hintItem = menu.findItem(R.id.action_hint);
+        returnHomeItem = menu.findItem(R.id.action_rth);
         searchView = (SearchView) searchViewItem.getActionView();
         // Assumes current activity is the searchable activity
         searchView.setSearchableInfo(searchManager.getSearchableInfo(getComponentName()));
@@ -110,6 +119,14 @@ public class MainActivity extends AppCompatActivity {
                 return false;
             }
         });
+        returnHomeItem.setOnMenuItemClickListener(new MenuItem.OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem item) {
+                requestReturnToHomeFromCurrentView();
+                return true;
+            }
+        });
+        refreshOptionsMenu();
         return true;
     }
 
@@ -244,6 +261,11 @@ public class MainActivity extends AppCompatActivity {
         } else {
             hintItem.setVisible(false);
         }
+        if (returnHomeItem != null) {
+            View currentView = stack.size() == 0 ? null : stack.peek().getView();
+            returnHomeItem.setVisible(currentView instanceof PresentableView
+                    && shouldShowReturnHomeAction(currentView));
+        }
     }
 
 
@@ -251,6 +273,46 @@ public class MainActivity extends AppCompatActivity {
         if (stack.size() != 0 && stack.peek().getView() instanceof PresentableView) {
             ToastUtils.setResultToToast(((PresentableView) stack.peek().getView()).getHint());
         }
+    }
+
+    private boolean shouldShowReturnHomeAction(View view) {
+        if (view == null) return false;
+        String viewName = view.getClass().getSimpleName().toLowerCase(Locale.US);
+        return viewName.contains("mission")
+                || viewName.contains("waypoint")
+                || viewName.contains("timetrial")
+                || viewName.contains("geofencing");
+    }
+
+    private void requestReturnToHomeFromCurrentView() {
+        if (stack.size() == 0) {
+            ReturnHomeCommand.start(ToastUtils::setResultToToast);
+            return;
+        }
+
+        View currentView = stack.peek().getView();
+        if (currentView instanceof MapMissionIntegrationView) {
+            ((MapMissionIntegrationView) currentView).requestReturnToHome();
+            return;
+        }
+        if (currentView instanceof VirtualStickWaypointView) {
+            ((VirtualStickWaypointView) currentView).requestReturnToHome();
+            return;
+        }
+        if (currentView instanceof TimeTrialView) {
+            ((TimeTrialView) currentView).requestReturnToHome();
+            return;
+        }
+        if (currentView instanceof PayloadDropMissionView) {
+            ((PayloadDropMissionView) currentView).requestReturnToHome();
+            return;
+        }
+        if (currentView instanceof WaypointMissionView) {
+            ((WaypointMissionView) currentView).requestReturnToHome();
+            return;
+        }
+
+        ReturnHomeCommand.start(ToastUtils::setResultToToast);
     }
 
 

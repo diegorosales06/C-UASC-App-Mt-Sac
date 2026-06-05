@@ -10,6 +10,7 @@ import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointNavigationMath;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.utils.OfflineDebugConfig;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 
 import java.util.Timer;
 import java.util.TimerTask;
@@ -67,7 +68,7 @@ public class TimeTrialMissionController {
     // ── Acceptance thresholds — change these to adjust gate hit precision ─────
     // Horizontal: how close (meters) the drone must get to count a gate
     private static final double ACCEPTANCE_RADIUS_M   = 5.0;
-    // Vertical: how close (meters) in altitude before a gate counts
+    // Vertical: tracked for logging/control, but gate splits advance on horizontal pass-through
     private static final double ALTITUDE_ACCEPTANCE_M = 0.5;
 
     // ── Control loop timing ───────────────────────────────────────────────────
@@ -75,12 +76,23 @@ public class TimeTrialMissionController {
     private static final float DT = CONTROL_LOOP_INTERVAL_MS / 1000.0f;
 
     // ── Speed limits ──────────────────────────────────────────────────────────
-    private static final float MIN_HORIZONTAL_SPEED = 0.5f; // higher floor for time trial
+    private static final float MIN_HORIZONTAL_SPEED = 2.0f; // keep time trial moving through gates
     private static final float MAX_VERTICAL_SPEED   = 2.0f;
+
+    // ── DJI FlightControlData hard limits ──────────────────────────────────────
+    // The SDK rejects any virtual-stick packet with a field outside these ranges
+    // (or containing NaN/Infinity) with error "Param illegal", and the aircraft
+    // then receives no input and simply hovers. Roll/pitch and vertical are m/s;
+    // yaw is angular velocity in deg/s.
+    private static final float DJI_MAX_HORIZONTAL_VELOCITY = 15.0f;
+    private static final float DJI_MAX_VERTICAL_VELOCITY   = 4.0f;
+    private static final float DJI_MAX_YAW_RATE            = 100.0f;
 
     // ── Timing display update interval ────────────────────────────────────────
     private static final long TIMING_UPDATE_INTERVAL_MS = 100;
     private static final long FINAL_RTH_DELAY_MS = 5_000L;
+    private static final long VIRTUAL_STICK_ERROR_LOG_INTERVAL_MS = 1_000L;
+    private static final float TAKEOFF_STABLE_ALT_M = 1.0f;
 
     // ── Dependencies ─────────────────────────────────────────────────────────
     private final TimeTrialWaypointStore store;
@@ -95,9 +107,12 @@ public class TimeTrialMissionController {
 
     // ── Mission state ─────────────────────────────────────────────────────────
     private boolean missionRunning       = false;
+    private boolean isTakingOff          = false;
     private boolean returnHomePending   = false;
     private int     currentWaypointIndex = 0;
-    private double  previousDistance     = 0.0;
+    private double  previousDistance     = Double.NaN;
+    private boolean loggedSpeedFloorOverride = false;
+    private long    lastVirtualStickErrorLogMs = 0L;
 
     // ── GPS / attitude state ──────────────────────────────────────────────────
     private double  currentLat        = 0.0;
@@ -205,10 +220,50 @@ public class TimeTrialMissionController {
 
         recordHomePointFromCurrentLocation();
 
+        if (flightController.getState() != null
+                && flightController.getState().isFlying()) {
+            callback.onLogMessage("Drone already airborne - skipping takeoff.");
+            enableVirtualStickAndBegin();
+            return;
+        }
+
+        callback.onLogMessage("Drone on ground - initiating takeoff.");
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Time Trial: TAKING OFF");
+            callback.onMissionActiveChanged(true);
+        });
+
+        isTakingOff = true;
+        flightController.startTakeoff(error -> {
+            if (error != null) {
+                isTakingOff = false;
+                callback.onLogMessage("Takeoff failed: "
+                        + error.getDescription());
+                mainHandler.post(() -> {
+                    callback.onStatusChanged("Time Trial: IDLE");
+                    callback.onMissionActiveChanged(false);
+                    callback.onTargetLabelChanged("Target: -");
+                });
+                return;
+            }
+            callback.onLogMessage("Takeoff command accepted. Climbing...");
+        });
+    }
+
+    private void enableVirtualStickAndBegin() {
+        if (flightController == null) return;
+        isTakingOff = false;
+        setAircraftHomeToRecordedPoint();
+
         flightController.setVirtualStickModeEnabled(true, error -> {
             if (error != null) {
                 callback.onLogMessage("Failed to enable Virtual Stick: "
                         + error.getDescription());
+                mainHandler.post(() -> {
+                    callback.onStatusChanged("Time Trial: IDLE");
+                    callback.onMissionActiveChanged(false);
+                    callback.onTargetLabelChanged("Target: -");
+                });
                 return;
             }
             callback.onLogMessage("Virtual Stick mode enabled.");
@@ -234,6 +289,7 @@ public class TimeTrialMissionController {
     /** Stops the time trial immediately. */
     public void stopMission() {
         missionRunning = false;
+        isTakingOff = false;
         returnHomePending = false;
         cancelReturnHomeDelay();
         stopControlLoop();
@@ -267,10 +323,53 @@ public class TimeTrialMissionController {
         callback.onLogMessage("Time trial stopped by user.");
     }
 
+    public void requestReturnToHome() {
+        if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
+            missionRunning = false;
+            isTakingOff = false;
+            returnHomePending = false;
+            cancelReturnHomeDelay();
+            stopControlLoop();
+            stopTimingUpdates();
+            finishOfflineDebugMission("manual RTH");
+            return;
+        }
+
+        if (flightController == null) {
+            initFlightController();
+            if (flightController == null) {
+                callback.onLogMessage("Flight controller not available.");
+                return;
+            }
+        }
+
+        missionRunning = false;
+        isTakingOff = false;
+        returnHomePending = false;
+        cancelReturnHomeDelay();
+        stopControlLoop();
+        stopTimingUpdates();
+
+        if (flightLogger != null) {
+            flightLogger.stop();
+            callback.onLogMessage("Log saved to: " + flightLogger.getLogFilePath());
+        }
+
+        sendVelocityCommand(0, 0, 0f, 0);
+        callback.onLogMessage("Manual RTH requested.");
+        mainHandler.post(() -> {
+            callback.onStatusChanged("Time Trial: RTH REQUESTED");
+            callback.onMissionActiveChanged(false);
+            callback.onTargetLabelChanged("Target: home");
+        });
+        triggerRTH();
+    }
+
     /** Detaches callbacks and cleans up. Call from TimeTrialView.onDetachedFromWindow(). */
     public void onDetached() {
-        if (missionRunning || returnHomePending) {
+        if (missionRunning || isTakingOff || returnHomePending) {
             missionRunning = false;
+            isTakingOff = false;
             returnHomePending = false;
             cancelReturnHomeDelay();
             stopControlLoop();
@@ -306,6 +405,14 @@ public class TimeTrialMissionController {
         currentAlt        = alt;
         currentHeadingDeg = (float) state.getAttitude().yaw;
         hasValidGPS       = true;
+
+        if (isTakingOff && state.isFlying() && currentAlt >= TAKEOFF_STABLE_ALT_M) {
+            isTakingOff = false;
+            callback.onLogMessage(String.format(
+                    "Stable hover reached (%.1fm). Starting time trial.", currentAlt));
+            mainHandler.post(() -> callback.onStatusChanged("Time Trial: STABILIZED"));
+            enableVirtualStickAndBegin();
+        }
 
         float vx = state.getVelocityX();
         float vy = state.getVelocityY();
@@ -354,6 +461,7 @@ public class TimeTrialMissionController {
         }
         if (!missionRunning || !hasValidGPS) return;
         if (currentWaypointIndex >= store.size()) return;
+        boolean targetAdvancedThisTick = false;
 
         double[] target    = store.getWaypoint(currentWaypointIndex);
         double   targetLat = target[0];
@@ -373,10 +481,16 @@ public class TimeTrialMissionController {
         boolean horizontalReached = distanceM <= ACCEPTANCE_RADIUS_M;
         boolean verticalReached   = Math.abs(altError) <= ALTITUDE_ACCEPTANCE_M;
 
-        if (horizontalReached && verticalReached) {
+        if (horizontalReached) {
+            if (!verticalReached) {
+                callback.onLogMessage(String.format(
+                        "Gate %d passed horizontally; altitude error %.1fm. Continuing.",
+                        currentWaypointIndex + 1, altError));
+            }
             recordSplit(currentWaypointIndex + 1);
             currentWaypointIndex++;
-            previousDistance = 0.0; // reset D term derivative for new leg
+            previousDistance = Double.NaN; // skip derivative on the first tick of the new leg
+            targetAdvancedThisTick = true;
 
             if (currentWaypointIndex >= store.size()) {
                 // All gates complete
@@ -404,18 +518,25 @@ public class TimeTrialMissionController {
         altError = targetAlt - currentAlt;
 
         // ── Feedforward + PD horizontal speed controller ──────────────────────
-        float maxSpeed    = tuning.getMaxHorizontalSpeed();
-        float brakingDist = tuning.getBrakingDistanceM();
+        float configuredMaxSpeed = tuning.getMaxHorizontalSpeed();
+        float maxSpeed = Math.max(MIN_HORIZONTAL_SPEED, configuredMaxSpeed);
+        if (configuredMaxSpeed < MIN_HORIZONTAL_SPEED && !loggedSpeedFloorOverride) {
+            loggedSpeedFloorOverride = true;
+            callback.onLogMessage(String.format(Locale.US,
+                    "Time trial max speed %.1fm/s was below movement floor; using %.1fm/s.",
+                    configuredMaxSpeed, maxSpeed));
+        }
+        float deceleration = Math.max(0.5f, tuning.getDeceleration());
+        float brakingDist = (maxSpeed * maxSpeed) / (2.0f * deceleration);
 
         float horizontalSpeed;
-        if (distanceM > brakingDist) {
+        if (targetAdvancedThisTick || Double.isNaN(previousDistance) || distanceM > brakingDist) {
             horizontalSpeed = maxSpeed;
         } else {
             double distanceRate = (distanceM - previousDistance) / DT;
             horizontalSpeed = (float)(tuning.getKpHorizontal() * distanceM
                     - tuning.getKdHorizontal() * distanceRate);
-            horizontalSpeed = Math.max(MIN_HORIZONTAL_SPEED,
-                    Math.min(maxSpeed, horizontalSpeed));
+            horizontalSpeed = clampHorizontalSpeed(horizontalSpeed, maxSpeed);
         }
 
         previousDistance = distanceM;
@@ -434,11 +555,33 @@ public class TimeTrialMissionController {
 
         float yawRate = computeYawRate(Math.toDegrees(bearingRad));
 
+        if (targetAdvancedThisTick) {
+            final int commandedGate = currentWaypointIndex + 1;
+            final double commandDistanceM = distanceM;
+            final float commandSpeed = horizontalSpeed;
+            final float commandPitch = pitchVelocity;
+            final float commandRoll = rollVelocity;
+            final float commandVertical = verticalVelocity;
+            mainHandler.post(() -> callback.onLogMessage(String.format(Locale.US,
+                    "Gate %d command: %.1fm away, %.1fm/s, pitch %.1f roll %.1f vertical %.1f.",
+                    commandedGate,
+                    commandDistanceM,
+                    commandSpeed,
+                    commandPitch,
+                    commandRoll,
+                    commandVertical)));
+        }
+
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) {
             applyOfflineDebugVelocity(pitchVelocity, rollVelocity, verticalVelocity);
         } else {
             sendVelocityCommand(pitchVelocity, rollVelocity, yawRate, verticalVelocity);
         }
+    }
+
+    private float clampHorizontalSpeed(float speed, float maxSpeed) {
+        float floor = Math.min(MIN_HORIZONTAL_SPEED, maxSpeed);
+        return Math.max(floor, Math.min(maxSpeed, speed));
     }
 
     // =========================================================================
@@ -574,12 +717,36 @@ public class TimeTrialMissionController {
         if (OfflineDebugConfig.OFFLINE_DEBUG_MODE) return;
         if (flightController == null) return;
 
-        FlightControlData data = new FlightControlData(pitch, roll, yaw, vertical);
+        // Clamp every field to the SDK's legal range and strip any NaN/Infinity.
+        // A single out-of-range value (e.g. a horizontal speed above 15 m/s when
+        // Max Speed is tuned high) makes the SDK reject the whole packet with
+        // "Param illegal", which silently halts the drone mid-run.
+        final float safePitch    = clampFinite(pitch,    DJI_MAX_HORIZONTAL_VELOCITY);
+        final float safeRoll     = clampFinite(roll,     DJI_MAX_HORIZONTAL_VELOCITY);
+        final float safeYaw      = clampFinite(yaw,      DJI_MAX_YAW_RATE);
+        final float safeVertical = clampFinite(vertical, DJI_MAX_VERTICAL_VELOCITY);
+
+        FlightControlData data = new FlightControlData(safePitch, safeRoll, safeYaw, safeVertical);
         flightController.sendVirtualStickFlightControlData(data, error -> {
             if (error != null) {
                 Log.e(TAG, "Virtual stick send error: " + error.getDescription());
+                long now = System.currentTimeMillis();
+                if (now - lastVirtualStickErrorLogMs >= VIRTUAL_STICK_ERROR_LOG_INTERVAL_MS) {
+                    lastVirtualStickErrorLogMs = now;
+                    callback.onLogMessage(String.format(Locale.US,
+                            "Virtual Stick command rejected: %s "
+                                    + "(pitch=%.2f roll=%.2f yaw=%.2f vert=%.2f)",
+                            error.getDescription(),
+                            safePitch, safeRoll, safeYaw, safeVertical));
+                }
             }
         });
+    }
+
+    /** Clamps to ±limit and converts any NaN/Infinity to 0 — the SDK rejects both. */
+    private static float clampFinite(float value, float limit) {
+        if (Float.isNaN(value) || Float.isInfinite(value)) return 0f;
+        return Math.max(-limit, Math.min(limit, value));
     }
 
     // =========================================================================
@@ -588,8 +755,13 @@ public class TimeTrialMissionController {
 
     private void triggerRTH() {
         if (flightController == null) return;
-        flightController.setVirtualStickModeEnabled(false, error ->
-                setHomeThenStartGoHome());
+        flightController.setVirtualStickModeEnabled(false, error -> {
+            if (error != null) {
+                callback.onLogMessage("Error disabling Virtual Stick: " + error.getDescription());
+            }
+            callback.onLogMessage("Starting RTH with aircraft's current home point.");
+            startGoHome();
+        });
     }
 
     private void holdBeforeReturnHome(Runnable returnHomeAction) {
@@ -651,28 +823,9 @@ public class TimeTrialMissionController {
         });
     }
 
-    private void setHomeThenStartGoHome() {
-        if (flightController == null) return;
-        if (!hasHomePoint) {
-            startGoHome();
-            return;
-        }
-
-        LocationCoordinate2D homePoint = new LocationCoordinate2D(homeLat, homeLng);
-        flightController.setHomeLocation(homePoint, error -> {
-            if (error == null) {
-                callback.onLogMessage("Home location confirmed for RTH.");
-            } else {
-                callback.onLogMessage("Could not confirm recorded home before RTH: "
-                        + error.getDescription()
-                        + ". Starting RTH with aircraft home point.");
-            }
-            startGoHome();
-        });
-    }
-
     private void startGoHome() {
-        flightController.startGoHome(rthError -> {
+        ReturnHomeCommand.setGoHomeHeightToCurrentAltitude(flightController, callback::onLogMessage, () ->
+                flightController.startGoHome(rthError -> {
             if (rthError == null) {
                 mainHandler.post(() -> {
                     callback.onLogMessage("RTH initiated successfully.");
@@ -682,7 +835,7 @@ public class TimeTrialMissionController {
             } else {
                 callback.onLogMessage("RTH failed: " + rthError.getDescription());
             }
-        });
+        }));
     }
 
     // =========================================================================
@@ -760,7 +913,10 @@ public class TimeTrialMissionController {
 
     private void resetMissionState() {
         currentWaypointIndex = 0;
-        previousDistance     = 0.0;
+        previousDistance     = Double.NaN;
+        loggedSpeedFloorOverride = false;
+        lastVirtualStickErrorLogMs = 0L;
+        isTakingOff          = false;
         returnHomePending    = false;
         missionStartTimeMs   = System.currentTimeMillis();
         lastSplitTimeMs      = missionStartTimeMs;

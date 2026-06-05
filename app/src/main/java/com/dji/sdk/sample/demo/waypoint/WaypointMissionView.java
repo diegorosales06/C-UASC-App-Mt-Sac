@@ -14,6 +14,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand;
 import com.dji.sdk.sample.internal.view.PresentableView;
 
 import java.util.ArrayList;
@@ -89,6 +90,7 @@ public class WaypointMissionView extends LinearLayout implements PresentableView
     private Button     btnUpload;        // uploads the mission to the drone
     private Button     btnStart;         // starts the uploaded mission
     private Button     btnStop;          // stops/cancels the mission mid-flight
+    private Button     btnReturnHome;    // manual RTH shortcut
     private ScrollView scrollLog;
     private TextView   tvLog;
 
@@ -256,10 +258,18 @@ public class WaypointMissionView extends LinearLayout implements PresentableView
         btnStop.setText("Stop");
         LinearLayout.LayoutParams bP5 = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        bP5.setMarginEnd(6);
         btnStop.setLayoutParams(bP5);
         btnStop.setEnabled(false); // disabled until mission is running
         btnStop.setOnClickListener(v -> onStopMission());
         btnRow2.addView(btnStop);
+
+        btnReturnHome = new Button(context);
+        btnReturnHome.setText("RTH");
+        btnReturnHome.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.75f));
+        btnReturnHome.setOnClickListener(v -> requestReturnToHome());
+        btnRow2.addView(btnReturnHome);
 
         addView(btnRow2);
 
@@ -620,6 +630,25 @@ public class WaypointMissionView extends LinearLayout implements PresentableView
             } else {
                 appendLog("Failed to stop mission: " + error.getDescription());
             }
+        });
+    }
+
+    public void requestReturnToHome() {
+        appendLog("Manual RTH requested.");
+        post(() -> tvStatus.setText("Mission: RTH REQUESTED"));
+
+        if (missionOperator == null) {
+            ReturnHomeCommand.start(this::appendLog);
+            return;
+        }
+
+        missionOperator.stopMission(error -> {
+            if (error == null) {
+                appendLog("Mission stopped before RTH.");
+            } else {
+                appendLog("Mission stop before RTH returned: " + error.getDescription());
+            }
+            ReturnHomeCommand.start(this::appendLog);
         });
     }
 
