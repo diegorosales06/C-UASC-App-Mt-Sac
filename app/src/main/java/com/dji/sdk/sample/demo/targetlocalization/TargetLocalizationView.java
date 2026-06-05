@@ -78,6 +78,20 @@ public class TargetLocalizationView extends LinearLayout
     private static final float NADIR_GIMBAL_PITCH_DEG = -90f;
     private static final double GIMBAL_ROTATION_TIME_SECONDS = 1.5;
     private static final long AUTO_PHOTO_COOLDOWN_MS = 8_000L;
+    private static final long SEARCH_CONTROL_INTERVAL_MS = 100L;
+    private static final long SEARCH_DETECTION_SUPPRESS_MS = 6_000L;
+    private static final double SEARCH_ACCEPTANCE_RADIUS_M = 2.5;
+    private static final double SEARCH_ALTITUDE_ACCEPTANCE_M = 0.8;
+    private static final float SEARCH_KP_HORIZONTAL = 0.45f;
+    private static final float SEARCH_MIN_HORIZONTAL_SPEED_MPS = 0.35f;
+    private static final float SEARCH_MAX_HORIZONTAL_SPEED_MPS = 2.5f;
+    private static final float SEARCH_MAX_VERTICAL_SPEED_MPS = 1.5f;
+    private static final float SEARCH_KP_VERTICAL = 0.6f;
+    private static final float SEARCH_KP_YAW = 0.35f;
+    private static final float SEARCH_MAX_YAW_RATE_DEG_S = 25f;
+    private static final float DEFAULT_SEARCH_ALTITUDE_M = 12f;
+    private static final double SEARCH_TRACK_OVERLAP = 0.55;
+    private static final int MAX_SEARCH_WAYPOINTS = 240;
     private static final double CAMERA_HORIZONTAL_FOV_DEG = 78.8;
     private static final double CAMERA_VERTICAL_FOV_DEG = 63.0;
 
@@ -94,13 +108,19 @@ public class TargetLocalizationView extends LinearLayout
     private TextView statusText;
     private TextView telemetryText;
     private TextView detectionText;
+    private TextView searchText;
     private TextView targetListText;
     private TextView logText;
+    private EditText boundaryEditText;
+    private EditText searchAltitudeEditText;
+    private EditText trackSpacingEditText;
     private EditText idOverrideEditText;
     private EditText positionTagEditText;
 
     private Button startDetectionButton;
     private Button stopDetectionButton;
+    private Button startSearchButton;
+    private Button stopSearchButton;
     private Button centerButton;
     private Button stopCenterButton;
     private Button captureButton;
@@ -131,6 +151,13 @@ public class TargetLocalizationView extends LinearLayout
     private long lastAutoPhotoMs;
     private boolean centeredTargetCaptured;
     private boolean photoCaptureInProgress;
+    private boolean searchActive;
+    private boolean searchPausedForTarget;
+    private boolean searchVirtualStickEnabled;
+    private long ignoreDetectionsUntilMs;
+    private int searchWaypointIndex;
+    private float searchAltitudeM = DEFAULT_SEARCH_ALTITUDE_M;
+    private List<SearchWaypoint> searchWaypoints = Collections.emptyList();
     private TargetLocalizationDetector.Detection bestDetection;
     private List<TargetLocalizationDetector.Detection> latestDetections = Collections.emptyList();
 
@@ -142,6 +169,17 @@ public class TargetLocalizationView extends LinearLayout
             }
             runCenterControlStep();
             mainHandler.postDelayed(this, CENTER_INTERVAL_MS);
+        }
+    };
+
+    private final Runnable searchControlRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!searchActive) {
+                return;
+            }
+            runSearchControlStep();
+            mainHandler.postDelayed(this, SEARCH_CONTROL_INTERVAL_MS);
         }
     };
 
@@ -177,6 +215,7 @@ public class TargetLocalizationView extends LinearLayout
 
     @Override
     protected void onDetachedFromWindow() {
+        stopSearch("Search stopped because Target Localization closed.");
         stopDetection();
         stopCenterAssist(null);
         unregisterVideoFeed();
@@ -227,9 +266,11 @@ public class TargetLocalizationView extends LinearLayout
         statusText = makeText(context, "Status: waiting for video", 15f);
         telemetryText = makeText(context, "Drone: unknown", 13f);
         detectionText = makeText(context, "Detection: idle", 13f);
+        searchText = makeText(context, "Search: idle", 13f);
         controls.addView(statusText);
         controls.addView(telemetryText);
         controls.addView(detectionText);
+        controls.addView(searchText);
 
         LinearLayout detectionRow = makeRow(context);
         startDetectionButton = makeButton(context, "Start Detection");
@@ -240,6 +281,49 @@ public class TargetLocalizationView extends LinearLayout
         stopDetectionButton.setOnClickListener(v -> stopDetection());
         detectionRow.addView(stopDetectionButton, weightedParams(false));
         controls.addView(detectionRow);
+
+        TextView boundaryLabel = makeText(context,
+                "Rough Boundary Coordinates (lat,lng per line; 2 corners or polygon):", 13f);
+        boundaryLabel.setPadding(0, dp(8), 0, dp(2));
+        controls.addView(boundaryLabel);
+
+        boundaryEditText = new EditText(context);
+        boundaryEditText.setHint("34.000000,-117.000000\n34.000200,-117.000400");
+        boundaryEditText.setMinLines(3);
+        boundaryEditText.setGravity(Gravity.TOP | Gravity.START);
+        boundaryEditText.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        controls.addView(boundaryEditText, new LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        LinearLayout searchSettingsRow = makeRow(context);
+        searchAltitudeEditText = new EditText(context);
+        searchAltitudeEditText.setHint("Alt m");
+        searchAltitudeEditText.setText(String.format(Locale.US, "%.1f", DEFAULT_SEARCH_ALTITUDE_M));
+        searchAltitudeEditText.setSingleLine(true);
+        searchAltitudeEditText.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        searchSettingsRow.addView(searchAltitudeEditText, weightedParams(true));
+
+        trackSpacingEditText = new EditText(context);
+        trackSpacingEditText.setHint("Spacing m (auto)");
+        trackSpacingEditText.setSingleLine(true);
+        trackSpacingEditText.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        searchSettingsRow.addView(trackSpacingEditText, weightedParams(false));
+        controls.addView(searchSettingsRow);
+
+        LinearLayout searchRow = makeRow(context);
+        startSearchButton = makeButton(context, "Start Search");
+        startSearchButton.setOnClickListener(v -> startSearchMission());
+        searchRow.addView(startSearchButton, weightedParams(true));
+
+        stopSearchButton = makeButton(context, "Stop Search");
+        stopSearchButton.setEnabled(false);
+        stopSearchButton.setOnClickListener(v -> stopSearch("Search stopped by user."));
+        searchRow.addView(stopSearchButton, weightedParams(false));
+        controls.addView(searchRow);
 
         LinearLayout centerRow = makeRow(context);
         centerButton = makeButton(context, "Center Assist");
@@ -401,6 +485,9 @@ public class TargetLocalizationView extends LinearLayout
     }
 
     private void stopDetection() {
+        if (searchActive) {
+            stopSearch("Search stopped because detection was stopped.");
+        }
         detectionActive = false;
         detectionInFlight = false;
         latestDetections = Collections.emptyList();
@@ -412,6 +499,455 @@ public class TargetLocalizationView extends LinearLayout
             detectionText.setText("Detection: stopped");
         }
         updateButtons();
+    }
+
+    private void startSearchMission() {
+        initFlightController();
+        initCameraAndGimbal();
+        if (flightController == null) {
+            showToast("Flight controller not available.");
+            return;
+        }
+        if (!hasValidGps) {
+            showToast("Waiting for GPS fix before search.");
+            return;
+        }
+
+        List<GeoPoint> boundary;
+        try {
+            boundary = parseBoundaryPoints(boundaryEditText.getText().toString());
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            appendLog("Search boundary rejected: " + e.getMessage());
+            return;
+        }
+
+        float requestedAltitude;
+        try {
+            requestedAltitude = parseSearchAltitude();
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            return;
+        }
+
+        double spacingM;
+        try {
+            spacingM = parseTrackSpacing(requestedAltitude);
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            return;
+        }
+
+        List<SearchWaypoint> generated = buildLawnmowerWaypoints(boundary, requestedAltitude, spacingM);
+        if (generated.isEmpty()) {
+            showToast("No search path generated from boundary.");
+            appendLog("Search path generation returned no waypoints.");
+            return;
+        }
+        if (generated.size() > MAX_SEARCH_WAYPOINTS) {
+            showToast("Search path too large. Increase spacing or shrink boundary.");
+            appendLog(String.format(Locale.US,
+                    "Search path rejected: %d waypoints exceeds limit %d.",
+                    generated.size(), MAX_SEARCH_WAYPOINTS));
+            return;
+        }
+
+        startDetection();
+
+        flightController.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
+        flightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
+        flightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
+        flightController.setRollPitchCoordinateSystem(FlightCoordinateSystem.GROUND);
+
+        searchAltitudeM = requestedAltitude;
+        searchWaypoints = generated;
+        searchWaypointIndex = closestSearchWaypointIndex(generated);
+        searchPausedForTarget = false;
+        ignoreDetectionsUntilMs = System.currentTimeMillis() + SEARCH_DETECTION_SUPPRESS_MS;
+
+        flightController.setVirtualStickModeEnabled(true, error -> mainHandler.post(() -> {
+            if (error != null) {
+                appendLog("Failed to enable Virtual Stick for search: " + error.getDescription());
+                showToast("Search start failed.");
+                return;
+            }
+
+            flightController.setVirtualStickAdvancedModeEnabled(true);
+            searchVirtualStickEnabled = true;
+            searchActive = true;
+            appendLog(String.format(Locale.US,
+                    "Search started: %d waypoints, altitude %.1fm, spacing %.1fm.",
+                    searchWaypoints.size(), searchAltitudeM, spacingM));
+            updateSearchText();
+            updateButtons();
+            mainHandler.removeCallbacks(searchControlRunnable);
+            mainHandler.post(searchControlRunnable);
+        }));
+    }
+
+    private void stopSearch(String reason) {
+        boolean wasActive = searchActive || searchVirtualStickEnabled || searchPausedForTarget;
+        if (!wasActive) {
+            return;
+        }
+
+        searchActive = false;
+        searchPausedForTarget = false;
+        mainHandler.removeCallbacks(searchControlRunnable);
+
+        if (centeringActive) {
+            stopCenterAssist(null);
+        } else {
+            sendGroundVelocityCommand(0f, 0f, 0f, 0f);
+        }
+
+        if (flightController != null && searchVirtualStickEnabled) {
+            flightController.setVirtualStickModeEnabled(false, error -> {
+                if (error != null) {
+                    appendLog("Search Virtual Stick disable warning: " + error.getDescription());
+                }
+            });
+        }
+
+        searchVirtualStickEnabled = false;
+        if (reason != null && !reason.isEmpty()) {
+            appendLog(reason);
+        }
+        statusText.setText(detectionActive ? "Status: detecting targets" : "Status: idle");
+        updateSearchText();
+        updateButtons();
+    }
+
+    private void finishSearch() {
+        searchActive = false;
+        searchPausedForTarget = false;
+        mainHandler.removeCallbacks(searchControlRunnable);
+        sendGroundVelocityCommand(0f, 0f, 0f, 0f);
+        if (flightController != null && searchVirtualStickEnabled) {
+            flightController.setVirtualStickModeEnabled(false, error -> {
+                if (error == null) {
+                    appendLog("Search complete. Virtual Stick disabled.");
+                } else {
+                    appendLog("Search complete, but Virtual Stick disable warning: "
+                            + error.getDescription());
+                }
+            });
+        }
+        searchVirtualStickEnabled = false;
+        statusText.setText("Status: search complete");
+        updateSearchText();
+        updateButtons();
+    }
+
+    private void runSearchControlStep() {
+        if (!searchActive) {
+            return;
+        }
+        if (!hasValidGps) {
+            searchText.setText("Search: waiting for GPS");
+            sendGroundVelocityCommand(0f, 0f, 0f, 0f);
+            return;
+        }
+        if (currentAlt < MIN_SEARCH_ALTITUDE_M - 0.5f) {
+            searchText.setText("Search: climbing to safe altitude");
+        }
+        if (centeringActive || photoCaptureInProgress) {
+            searchPausedForTarget = true;
+            sendGroundVelocityCommand(0f, 0f, 0f, 0f);
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (bestDetection != null
+                && !isBestDetectionStale()
+                && now >= ignoreDetectionsUntilMs) {
+            searchPausedForTarget = true;
+            sendGroundVelocityCommand(0f, 0f, 0f, 0f);
+            appendLog("Search target candidate found. Pausing grid and starting center assist.");
+            startCenterAssist();
+            return;
+        }
+
+        searchPausedForTarget = false;
+        if (searchWaypointIndex >= searchWaypoints.size()) {
+            finishSearch();
+            return;
+        }
+
+        SearchWaypoint target = searchWaypoints.get(searchWaypointIndex);
+        double distanceM = WaypointNavigationMath.haversineDistance(
+                currentLat, currentLng, target.latitude, target.longitude);
+        float altitudeError = target.altitudeMeters - currentAlt;
+
+        if (distanceM <= SEARCH_ACCEPTANCE_RADIUS_M
+                && Math.abs(altitudeError) <= SEARCH_ALTITUDE_ACCEPTANCE_M) {
+            searchWaypointIndex++;
+            if (searchWaypointIndex >= searchWaypoints.size()) {
+                finishSearch();
+                return;
+            }
+            target = searchWaypoints.get(searchWaypointIndex);
+            distanceM = WaypointNavigationMath.haversineDistance(
+                    currentLat, currentLng, target.latitude, target.longitude);
+            altitudeError = target.altitudeMeters - currentAlt;
+            appendLog(String.format(Locale.US,
+                    "Search waypoint %d/%d.",
+                    searchWaypointIndex + 1, searchWaypoints.size()));
+        }
+
+        double bearingRad = WaypointNavigationMath.bearing(
+                currentLat, currentLng, target.latitude, target.longitude);
+        float horizontalSpeed = clamp((float) (SEARCH_KP_HORIZONTAL * distanceM),
+                SEARCH_MIN_HORIZONTAL_SPEED_MPS, SEARCH_MAX_HORIZONTAL_SPEED_MPS);
+        if (distanceM <= SEARCH_ACCEPTANCE_RADIUS_M) {
+            horizontalSpeed = 0f;
+        }
+
+        float eastVelocity = (float) (horizontalSpeed * Math.sin(bearingRad));
+        float northVelocity = (float) (horizontalSpeed * Math.cos(bearingRad));
+        float verticalVelocity = clamp(SEARCH_KP_VERTICAL * altitudeError,
+                -SEARCH_MAX_VERTICAL_SPEED_MPS, SEARCH_MAX_VERTICAL_SPEED_MPS);
+        if (currentAlt <= MIN_SEARCH_ALTITUDE_M && verticalVelocity < 0f) {
+            verticalVelocity = 0f;
+        }
+
+        float yawRate = computeYawRate(Math.toDegrees(bearingRad));
+        sendGroundVelocityCommand(eastVelocity, northVelocity, yawRate, verticalVelocity);
+        updateSearchText();
+    }
+
+    private void sendGroundVelocityCommand(float east, float north, float yawRate, float vertical) {
+        if (flightController == null) {
+            return;
+        }
+        FlightControlData data = new FlightControlData(east, north, yawRate, vertical);
+        flightController.sendVirtualStickFlightControlData(data, error -> {
+            if (error != null) {
+                Log.e(TAG, "Search virtual stick send error: " + error.getDescription());
+            }
+        });
+    }
+
+    private float computeYawRate(double targetHeadingDeg) {
+        double headingError = WaypointNavigationMath.normalizeHeadingError(
+                targetHeadingDeg - currentYawDeg);
+        if (Math.abs(headingError) < 5.0) {
+            return 0f;
+        }
+        return clamp((float) (SEARCH_KP_YAW * headingError),
+                -SEARCH_MAX_YAW_RATE_DEG_S, SEARCH_MAX_YAW_RATE_DEG_S);
+    }
+
+    private float parseSearchAltitude() {
+        String text = searchAltitudeEditText.getText().toString().trim();
+        float altitude = DEFAULT_SEARCH_ALTITUDE_M;
+        if (!text.isEmpty()) {
+            try {
+                altitude = Float.parseFloat(text);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid search altitude.");
+            }
+        }
+        if (altitude < MIN_SEARCH_ALTITUDE_M) {
+            throw new IllegalArgumentException("Search altitude must be at least 7.62m / 25ft.");
+        }
+        return altitude;
+    }
+
+    private double parseTrackSpacing(float altitudeM) {
+        String text = trackSpacingEditText.getText().toString().trim();
+        if (!text.isEmpty()) {
+            try {
+                double spacing = Double.parseDouble(text);
+                if (spacing < 2.0) {
+                    throw new IllegalArgumentException("Track spacing must be at least 2m.");
+                }
+                return spacing;
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid track spacing.");
+            }
+        }
+
+        double footprintX = 2.0 * altitudeM * Math.tan(Math.toRadians(CAMERA_HORIZONTAL_FOV_DEG * 0.5));
+        double footprintY = 2.0 * altitudeM * Math.tan(Math.toRadians(CAMERA_VERTICAL_FOV_DEG * 0.5));
+        return Math.max(2.0, Math.min(footprintX, footprintY) * SEARCH_TRACK_OVERLAP);
+    }
+
+    private List<GeoPoint> parseBoundaryPoints(String text) {
+        List<GeoPoint> points = new ArrayList<>();
+        String[] rows = text.split("[\\r\\n;]+");
+        for (String row : rows) {
+            String cleaned = row.trim()
+                    .replace("(", "")
+                    .replace(")", "")
+                    .replace("[", "")
+                    .replace("]", "");
+            if (cleaned.isEmpty()) {
+                continue;
+            }
+            String[] parts = cleaned.split("[,\\s]+");
+            if (parts.length < 2) {
+                throw new IllegalArgumentException("Boundary rows must be lat,lng.");
+            }
+            try {
+                double lat = Double.parseDouble(parts[0]);
+                double lng = Double.parseDouble(parts[1]);
+                if (lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0) {
+                    throw new IllegalArgumentException("Boundary coordinate out of range.");
+                }
+                points.add(new GeoPoint(lat, lng));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid boundary coordinate.");
+            }
+        }
+
+        if (points.size() == 2) {
+            GeoPoint a = points.get(0);
+            GeoPoint b = points.get(1);
+            double south = Math.min(a.latitude, b.latitude);
+            double north = Math.max(a.latitude, b.latitude);
+            double west = Math.min(a.longitude, b.longitude);
+            double east = Math.max(a.longitude, b.longitude);
+            List<GeoPoint> rectangle = new ArrayList<>();
+            rectangle.add(new GeoPoint(south, west));
+            rectangle.add(new GeoPoint(south, east));
+            rectangle.add(new GeoPoint(north, east));
+            rectangle.add(new GeoPoint(north, west));
+            return rectangle;
+        }
+
+        if (points.size() < 3) {
+            throw new IllegalArgumentException("Enter 2 corners or at least 3 polygon points.");
+        }
+        return points;
+    }
+
+    private List<SearchWaypoint> buildLawnmowerWaypoints(List<GeoPoint> boundary,
+                                                         float altitudeM,
+                                                         double spacingM) {
+        if (boundary.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        GeoPoint origin = boundary.get(0);
+        List<LocalPoint> polygon = new ArrayList<>();
+        double minNorth = Double.MAX_VALUE;
+        double maxNorth = -Double.MAX_VALUE;
+        for (GeoPoint point : boundary) {
+            LocalPoint local = toLocalPoint(point, origin);
+            polygon.add(local);
+            minNorth = Math.min(minNorth, local.northMeters);
+            maxNorth = Math.max(maxNorth, local.northMeters);
+        }
+
+        List<SearchWaypoint> waypoints = new ArrayList<>();
+        boolean reverse = false;
+        for (double north = minNorth; north <= maxNorth + 0.1; north += spacingM) {
+            List<Double> intersections = horizontalIntersections(polygon, north);
+            Collections.sort(intersections);
+            for (int i = 0; i + 1 < intersections.size(); i += 2) {
+                double west = intersections.get(i);
+                double east = intersections.get(i + 1);
+                if (Math.abs(east - west) < 1.0) {
+                    continue;
+                }
+
+                if (reverse) {
+                    waypoints.add(toSearchWaypoint(east, north, origin, altitudeM));
+                    waypoints.add(toSearchWaypoint(west, north, origin, altitudeM));
+                } else {
+                    waypoints.add(toSearchWaypoint(west, north, origin, altitudeM));
+                    waypoints.add(toSearchWaypoint(east, north, origin, altitudeM));
+                }
+                reverse = !reverse;
+            }
+        }
+
+        if (waypoints.size() < 2) {
+            waypoints.clear();
+            LocalPoint centroid = centroid(polygon);
+            waypoints.add(toSearchWaypoint(centroid.eastMeters, centroid.northMeters,
+                    origin, altitudeM));
+        }
+        return waypoints;
+    }
+
+    private List<Double> horizontalIntersections(List<LocalPoint> polygon, double north) {
+        List<Double> intersections = new ArrayList<>();
+        for (int i = 0; i < polygon.size(); i++) {
+            LocalPoint a = polygon.get(i);
+            LocalPoint b = polygon.get((i + 1) % polygon.size());
+            boolean crosses = (a.northMeters <= north && b.northMeters > north)
+                    || (b.northMeters <= north && a.northMeters > north);
+            if (!crosses) {
+                continue;
+            }
+            double t = (north - a.northMeters) / (b.northMeters - a.northMeters);
+            intersections.add(a.eastMeters + t * (b.eastMeters - a.eastMeters));
+        }
+        return intersections;
+    }
+
+    private int closestSearchWaypointIndex(List<SearchWaypoint> waypoints) {
+        int closestIndex = 0;
+        double closestDistance = Double.MAX_VALUE;
+        for (int i = 0; i < waypoints.size(); i++) {
+            SearchWaypoint waypoint = waypoints.get(i);
+            double distance = WaypointNavigationMath.haversineDistance(
+                    currentLat, currentLng, waypoint.latitude, waypoint.longitude);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestIndex = i;
+            }
+        }
+        return closestIndex;
+    }
+
+    private void updateSearchText() {
+        if (searchText == null) {
+            return;
+        }
+        if (!searchActive && !searchVirtualStickEnabled) {
+            searchText.setText("Search: idle");
+            return;
+        }
+        searchText.setText(String.format(Locale.US,
+                "Search: %s | wp %d/%d | alt %.1fm",
+                searchPausedForTarget ? "target pause" : "grid",
+                Math.min(searchWaypointIndex + 1, searchWaypoints.size()),
+                searchWaypoints.size(),
+                searchAltitudeM));
+    }
+
+    private LocalPoint toLocalPoint(GeoPoint point, GeoPoint origin) {
+        double north = Math.toRadians(point.latitude - origin.latitude)
+                * WaypointNavigationMath.EARTH_RADIUS_M;
+        double east = Math.toRadians(point.longitude - origin.longitude)
+                * WaypointNavigationMath.EARTH_RADIUS_M
+                * Math.cos(Math.toRadians(origin.latitude));
+        return new LocalPoint(east, north);
+    }
+
+    private SearchWaypoint toSearchWaypoint(double eastMeters,
+                                            double northMeters,
+                                            GeoPoint origin,
+                                            float altitudeM) {
+        double latitude = origin.latitude
+                + WaypointNavigationMath.metersToLatitudeDegrees(northMeters);
+        double longitude = origin.longitude
+                + WaypointNavigationMath.metersToLongitudeDegrees(eastMeters, origin.latitude);
+        return new SearchWaypoint(latitude, longitude, altitudeM);
+    }
+
+    private LocalPoint centroid(List<LocalPoint> points) {
+        double east = 0.0;
+        double north = 0.0;
+        for (LocalPoint point : points) {
+            east += point.eastMeters;
+            north += point.northMeters;
+        }
+        int count = Math.max(1, points.size());
+        return new LocalPoint(east / count, north / count);
     }
 
     private void analyzeFrameIfReady() {
@@ -544,6 +1080,11 @@ public class TargetLocalizationView extends LinearLayout
             if (error != null) {
                 showToast("Virtual Stick failed: " + error.getDescription());
                 appendLog("Unable to start center assist: " + error.getDescription());
+                if (searchActive) {
+                    searchPausedForTarget = false;
+                    ignoreDetectionsUntilMs = System.currentTimeMillis() + SEARCH_DETECTION_SUPPRESS_MS;
+                    updateSearchText();
+                }
                 return;
             }
 
@@ -571,7 +1112,15 @@ public class TargetLocalizationView extends LinearLayout
 
         if (flightController != null && wasActive) {
             sendBodyVelocityCommand(0f, 0f, 0f, 0f);
-            if (virtualStickEnabledByThisView) {
+            if (searchActive) {
+                flightController.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
+                flightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
+                flightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
+                flightController.setRollPitchCoordinateSystem(FlightCoordinateSystem.GROUND);
+                searchPausedForTarget = false;
+                ignoreDetectionsUntilMs = System.currentTimeMillis() + SEARCH_DETECTION_SUPPRESS_MS;
+                updateSearchText();
+            } else if (virtualStickEnabledByThisView) {
                 flightController.setVirtualStickModeEnabled(false, error -> {
                     if (error != null) {
                         appendLog("Virtual Stick disable warning: " + error.getDescription());
@@ -583,7 +1132,11 @@ public class TargetLocalizationView extends LinearLayout
 
         if (reason != null && !reason.isEmpty()) {
             appendLog(reason);
-            statusText.setText(detectionActive ? "Status: detecting targets" : "Status: idle");
+            if (searchActive) {
+                statusText.setText("Status: search resuming");
+            } else {
+                statusText.setText(detectionActive ? "Status: detecting targets" : "Status: idle");
+            }
         }
         updateButtons();
     }
@@ -924,6 +1477,9 @@ public class TargetLocalizationView extends LinearLayout
         if (centeringActive && (state.isGoingHome() || state.getFlightMode() == FlightMode.GO_HOME)) {
             post(() -> stopCenterAssist("Center assist stopped: aircraft is returning home."));
         }
+        if (searchActive && (state.isGoingHome() || state.getFlightMode() == FlightMode.GO_HOME)) {
+            post(() -> stopSearch("Search stopped: aircraft is returning home."));
+        }
 
         post(this::updateTelemetryText);
     }
@@ -950,7 +1506,9 @@ public class TargetLocalizationView extends LinearLayout
 
         startDetectionButton.setEnabled(!detectionActive);
         stopDetectionButton.setEnabled(detectionActive);
-        centerButton.setEnabled(!centeringActive);
+        startSearchButton.setEnabled(!searchActive);
+        stopSearchButton.setEnabled(searchActive || searchVirtualStickEnabled);
+        centerButton.setEnabled(detectionActive && !centeringActive);
         stopCenterButton.setEnabled(centeringActive);
         captureButton.setEnabled(detectionActive);
 
@@ -1044,6 +1602,38 @@ public class TargetLocalizationView extends LinearLayout
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
         analyzeFrameIfReady();
+    }
+
+    private static final class GeoPoint {
+        final double latitude;
+        final double longitude;
+
+        GeoPoint(double latitude, double longitude) {
+            this.latitude = latitude;
+            this.longitude = longitude;
+        }
+    }
+
+    private static final class LocalPoint {
+        final double eastMeters;
+        final double northMeters;
+
+        LocalPoint(double eastMeters, double northMeters) {
+            this.eastMeters = eastMeters;
+            this.northMeters = northMeters;
+        }
+    }
+
+    private static final class SearchWaypoint {
+        final double latitude;
+        final double longitude;
+        final float altitudeMeters;
+
+        SearchWaypoint(double latitude, double longitude, float altitudeMeters) {
+            this.latitude = latitude;
+            this.longitude = longitude;
+            this.altitudeMeters = altitudeMeters;
+        }
     }
 
     private static final class GeoEstimate {
