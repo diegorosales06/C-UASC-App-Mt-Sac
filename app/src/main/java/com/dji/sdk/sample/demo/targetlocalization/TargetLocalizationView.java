@@ -1,6 +1,9 @@
 package com.dji.sdk.sample.demo.targetlocalization;
 
+import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
@@ -23,10 +26,15 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.R;
+import com.dji.sdk.sample.demo.virtualstickwaypoint.QrWaypointScanActivity;
 import com.dji.sdk.sample.demo.virtualstickwaypoint.WaypointNavigationMath;
 import com.dji.sdk.sample.internal.controller.DJISampleApplication;
 import com.dji.sdk.sample.internal.utils.FlightControllerStateDispatcher;
 import com.dji.sdk.sample.internal.view.PresentableView;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -119,6 +127,7 @@ public class TargetLocalizationView extends LinearLayout
 
     private Button startDetectionButton;
     private Button stopDetectionButton;
+    private Button importSearchQrButton;
     private Button startSearchButton;
     private Button stopSearchButton;
     private Button centerButton;
@@ -222,6 +231,7 @@ public class TargetLocalizationView extends LinearLayout
         if (flightController != null) {
             FlightControllerStateDispatcher.removeListener(flightStateListener);
         }
+        QrWaypointScanActivity.clearResultListener();
         detectorExecutor.shutdownNow();
         super.onDetachedFromWindow();
     }
@@ -313,6 +323,13 @@ public class TargetLocalizationView extends LinearLayout
                 | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         searchSettingsRow.addView(trackSpacingEditText, weightedParams(false));
         controls.addView(searchSettingsRow);
+
+        LinearLayout importRow = makeRow(context);
+        importSearchQrButton = makeButton(context, "Import QR");
+        importSearchQrButton.setOnClickListener(v -> onImportTargetLocalizationQr());
+        importRow.addView(importSearchQrButton, new LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        controls.addView(importRow);
 
         LinearLayout searchRow = makeRow(context);
         startSearchButton = makeButton(context, "Start Search");
@@ -820,6 +837,380 @@ public class TargetLocalizationView extends LinearLayout
             throw new IllegalArgumentException("Enter 2 corners or at least 3 polygon points.");
         }
         return points;
+    }
+
+    private void onImportTargetLocalizationQr() {
+        Context ctx = getContext();
+        if (!(ctx instanceof Activity)) {
+            showToast("QR scanner needs an activity context.");
+            return;
+        }
+        QrWaypointScanActivity.setResultListener(payload ->
+                post(() -> handleTargetLocalizationQrPayload(payload)));
+        ctx.startActivity(new Intent(ctx, QrWaypointScanActivity.class));
+        appendLog("Target localization QR scanner opened.");
+    }
+
+    private void handleTargetLocalizationQrPayload(String payload) {
+        final TargetLocalizationQrImport imported;
+        try {
+            imported = parseTargetLocalizationQrPayload(payload);
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            appendLog("Target localization QR import failed: " + e.getMessage());
+            return;
+        }
+
+        StringBuilder preview = new StringBuilder();
+        preview.append("Boundary:\n")
+                .append(imported.boundaryText)
+                .append("\n\nAltitude: ");
+        preview.append(imported.altitudeText == null
+                ? searchAltitudeEditText.getText().toString().trim()
+                : imported.altitudeText);
+        preview.append(" m\nSpacing: ");
+        preview.append(imported.spacingText == null || imported.spacingText.isEmpty()
+                ? "auto/current"
+                : imported.spacingText + " m");
+
+        new AlertDialog.Builder(getContext())
+                .setTitle("Import Target Search")
+                .setMessage(preview.toString())
+                .setPositiveButton("Import", (dialog, which) -> {
+                    boundaryEditText.setText(imported.boundaryText);
+                    if (imported.altitudeText != null) {
+                        searchAltitudeEditText.setText(imported.altitudeText);
+                    }
+                    if (imported.spacingText != null) {
+                        trackSpacingEditText.setText(imported.spacingText);
+                    }
+                    appendLog(String.format(Locale.US,
+                            "Imported target search QR: %d boundary coordinate(s).",
+                            imported.boundaryCount));
+                    showToast("Target search QR imported.");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private TargetLocalizationQrImport parseTargetLocalizationQrPayload(String payload) {
+        if (payload == null || payload.trim().isEmpty()) {
+            throw new IllegalArgumentException("QR code was empty.");
+        }
+
+        String trimmed = payload.trim();
+        try {
+            if (trimmed.startsWith("{")) {
+                return parseTargetLocalizationQrJson(new JSONObject(trimmed));
+            }
+            if (trimmed.startsWith("[")) {
+                return parseTargetLocalizationQrJsonArray(new JSONArray(trimmed), null, null);
+            }
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Target localization QR JSON was not valid.");
+        }
+
+        return parseTargetLocalizationQrText(trimmed);
+    }
+
+    private TargetLocalizationQrImport parseTargetLocalizationQrJson(JSONObject root)
+            throws JSONException {
+        String type = root.optString("type", root.optString("mission", ""));
+        validateTargetLocalizationQrType(type);
+
+        JSONArray points = firstJsonArray(root,
+                "boundary", "bounds", "polygon", "points", "roughBoundary", "rough_boundary");
+        String boundaryText = points == null
+                ? boundaryTextFromBoundsObject(root)
+                : boundaryTextFromJsonArray(points);
+        if (boundaryText == null || boundaryText.trim().isEmpty()) {
+            JSONObject bounds = firstJsonObject(root, "boundary", "bounds", "roughBoundary",
+                    "rough_boundary");
+            if (bounds != null) {
+                boundaryText = boundaryTextFromBoundsObject(bounds);
+            }
+        }
+
+        Double altitude = readOptionalJsonDouble(root,
+                "alt", "altitude", "searchAltitude", "search_altitude");
+        Double spacing = readOptionalJsonDouble(root,
+                "spacing", "trackSpacing", "track_spacing", "searchSpacing", "search_spacing");
+        JSONObject search = root.optJSONObject("search");
+        if (search != null) {
+            if (altitude == null) {
+                altitude = readOptionalJsonDouble(search,
+                        "alt", "altitude", "searchAltitude", "search_altitude");
+            }
+            if (spacing == null) {
+                spacing = readOptionalJsonDouble(search,
+                        "spacing", "trackSpacing", "track_spacing",
+                        "searchSpacing", "search_spacing");
+            }
+        }
+
+        return buildTargetLocalizationQrImport(boundaryText, altitude, spacing);
+    }
+
+    private TargetLocalizationQrImport parseTargetLocalizationQrJsonArray(JSONArray points,
+                                                                         Double altitude,
+                                                                         Double spacing)
+            throws JSONException {
+        return buildTargetLocalizationQrImport(
+                boundaryTextFromJsonArray(points), altitude, spacing);
+    }
+
+    private TargetLocalizationQrImport parseTargetLocalizationQrText(String payload) {
+        String[] rows = payload.split("[\\r\\n;]+");
+        StringBuilder boundary = new StringBuilder();
+        Double altitude = null;
+        Double spacing = null;
+        boolean sawDataLine = false;
+
+        for (String rawRow : rows) {
+            String row = rawRow.trim();
+            if (row.isEmpty() || row.startsWith("#")) {
+                continue;
+            }
+
+            if (isCoordinateHeader(row)) {
+                sawDataLine = true;
+                continue;
+            }
+
+            int equalsIndex = row.indexOf('=');
+            if (equalsIndex > 0) {
+                String key = row.substring(0, equalsIndex).trim().toUpperCase(Locale.US);
+                String value = row.substring(equalsIndex + 1).trim();
+                if (key.equals("TYPE") || key.equals("MISSION")) {
+                    validateTargetLocalizationQrType(value);
+                } else if (key.equals("ALT") || key.equals("ALTITUDE")
+                        || key.equals("SEARCH_ALTITUDE")) {
+                    altitude = parseQrDouble(value, "Search altitude");
+                } else if (key.equals("SPACING") || key.equals("TRACK_SPACING")
+                        || key.equals("SEARCH_SPACING")) {
+                    spacing = value.isEmpty() ? null : parseQrDouble(value, "Track spacing");
+                } else if (key.equals("BOUNDARY") || key.equals("BOUNDS")
+                        || key.equals("POLYGON") || key.equals("POINTS")) {
+                    appendBoundaryLine(boundary, value);
+                    sawDataLine = true;
+                }
+                continue;
+            }
+
+            if (!sawDataLine && !looksLikeCoordinateRow(row)) {
+                validateTargetLocalizationQrType(row);
+                sawDataLine = true;
+                continue;
+            }
+
+            appendBoundaryLine(boundary, row);
+            sawDataLine = true;
+        }
+
+        return buildTargetLocalizationQrImport(boundary.toString(), altitude, spacing);
+    }
+
+    private TargetLocalizationQrImport buildTargetLocalizationQrImport(String boundaryText,
+                                                                       Double altitude,
+                                                                       Double spacing) {
+        if (boundaryText == null || boundaryText.trim().isEmpty()) {
+            throw new IllegalArgumentException("QR code did not contain boundary coordinates.");
+        }
+        List<GeoPoint> boundary = parseBoundaryPoints(boundaryText);
+
+        String altitudeText = null;
+        if (altitude != null) {
+            if (altitude < MIN_SEARCH_ALTITUDE_M) {
+                throw new IllegalArgumentException("Search altitude must be at least 7.62m / 25ft.");
+            }
+            altitudeText = formatQrNumber(altitude);
+        }
+
+        String spacingText = null;
+        if (spacing != null) {
+            if (spacing < 2.0) {
+                throw new IllegalArgumentException("Track spacing must be at least 2m.");
+            }
+            spacingText = formatQrNumber(spacing);
+        }
+
+        return new TargetLocalizationQrImport(
+                normalizeBoundaryText(boundaryText), altitudeText, spacingText, boundary.size());
+    }
+
+    private JSONArray firstJsonArray(JSONObject root, String... keys) {
+        for (String key : keys) {
+            JSONArray array = root.optJSONArray(key);
+            if (array != null) {
+                return array;
+            }
+        }
+        return null;
+    }
+
+    private JSONObject firstJsonObject(JSONObject root, String... keys) {
+        for (String key : keys) {
+            JSONObject object = root.optJSONObject(key);
+            if (object != null) {
+                return object;
+            }
+        }
+        return null;
+    }
+
+    private String boundaryTextFromJsonArray(JSONArray points) throws JSONException {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < points.length(); i++) {
+            Object value = points.get(i);
+            if (value instanceof JSONObject) {
+                JSONObject point = (JSONObject) value;
+                double lat = readRequiredJsonDouble(point, "lat", "latitude");
+                double lng = readRequiredJsonDouble(point, "lng", "lon", "longitude");
+                appendBoundaryLine(builder, formatBoundaryLine(lat, lng));
+            } else if (value instanceof JSONArray) {
+                JSONArray point = (JSONArray) value;
+                if (point.length() < 2) {
+                    throw new IllegalArgumentException("Boundary JSON points need lat and lng.");
+                }
+                appendBoundaryLine(builder, formatBoundaryLine(
+                        point.optDouble(0, Double.NaN),
+                        point.optDouble(1, Double.NaN)));
+            } else if (value instanceof String) {
+                appendBoundaryLine(builder, (String) value);
+            } else {
+                throw new IllegalArgumentException("Boundary JSON points must be objects.");
+            }
+        }
+        return builder.toString();
+    }
+
+    private String boundaryTextFromBoundsObject(JSONObject object) {
+        Double south = readOptionalJsonDouble(object, "south", "minLat", "min_lat");
+        Double north = readOptionalJsonDouble(object, "north", "maxLat", "max_lat");
+        Double west = readOptionalJsonDouble(object, "west", "minLng", "min_lng",
+                "minLon", "min_lon");
+        Double east = readOptionalJsonDouble(object, "east", "maxLng", "max_lng",
+                "maxLon", "max_lon");
+        if (south == null || north == null || west == null || east == null) {
+            return null;
+        }
+        return formatBoundaryLine(south, west) + "\n" + formatBoundaryLine(north, east);
+    }
+
+    private double readRequiredJsonDouble(JSONObject object, String... keys) {
+        Double value = readOptionalJsonDouble(object, keys);
+        if (value == null) {
+            throw new IllegalArgumentException("Boundary JSON is missing " + keys[0] + ".");
+        }
+        return value;
+    }
+
+    private Double readOptionalJsonDouble(JSONObject object, String... keys) {
+        for (String key : keys) {
+            if (object.has(key)) {
+                double value = object.optDouble(key, Double.NaN);
+                if (Double.isNaN(value) || Double.isInfinite(value)) {
+                    throw new IllegalArgumentException("QR JSON contains invalid number: " + key);
+                }
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private double parseQrDouble(String value, String label) {
+        try {
+            double parsed = Double.parseDouble(value);
+            if (Double.isNaN(parsed) || Double.isInfinite(parsed)) {
+                throw new NumberFormatException("non-finite");
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(label + " in QR is invalid.");
+        }
+    }
+
+    private void validateTargetLocalizationQrType(String type) {
+        String t = type == null ? "" : type.trim().toUpperCase(Locale.US);
+        if (t.isEmpty()
+                || t.equals("TARGET_LOCALIZATION")
+                || t.equals("TARGET_LOCALIZATION_SEARCH")
+                || t.equals("OBJECT_LOCALIZATION")
+                || t.equals("TARGET_SEARCH")
+                || t.equals("TARGETS")) {
+            return;
+        }
+        if (t.equals("WAYPOINTS") || t.equals("WAYPOINT") || t.equals("VS_WAYPOINTS")) {
+            throw new IllegalArgumentException("This QR contains waypoints, not a target search.");
+        }
+        if (t.equals("PACKAGE_DROP") || t.equals("DROP_TARGET")) {
+            throw new IllegalArgumentException("This QR contains a package drop target, not a target search.");
+        }
+        if (t.equals("TIME_TRIAL") || t.equals("CIRCUIT_TIME_TRIAL")) {
+            throw new IllegalArgumentException("This QR contains a time trial route, not a target search.");
+        }
+        throw new IllegalArgumentException("This QR is not a target localization QR.");
+    }
+
+    private boolean isCoordinateHeader(String row) {
+        String lower = row.trim().toLowerCase(Locale.US).replace(" ", "");
+        return lower.equals("lat,lng")
+                || lower.equals("lat,lon")
+                || lower.equals("latitude,longitude")
+                || lower.equals("latitude,lon");
+    }
+
+    private boolean looksLikeCoordinateRow(String row) {
+        String cleaned = row.trim()
+                .replace("(", "")
+                .replace(")", "")
+                .replace("[", "")
+                .replace("]", "");
+        String[] parts = cleaned.split("[,\\s]+");
+        if (parts.length < 2) {
+            return false;
+        }
+        try {
+            Double.parseDouble(parts[0]);
+            Double.parseDouble(parts[1]);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private void appendBoundaryLine(StringBuilder builder, String line) {
+        if (line == null || line.trim().isEmpty()) {
+            return;
+        }
+        if (builder.length() > 0) {
+            builder.append('\n');
+        }
+        builder.append(line.trim());
+    }
+
+    private String normalizeBoundaryText(String boundaryText) {
+        StringBuilder builder = new StringBuilder();
+        String[] rows = boundaryText.split("[\\r\\n;]+");
+        for (String row : rows) {
+            String cleaned = row.trim();
+            if (!cleaned.isEmpty()) {
+                appendBoundaryLine(builder, cleaned);
+            }
+        }
+        return builder.toString();
+    }
+
+    private String formatBoundaryLine(double lat, double lng) {
+        if (Double.isNaN(lat) || Double.isNaN(lng)
+                || Double.isInfinite(lat) || Double.isInfinite(lng)) {
+            throw new IllegalArgumentException("Boundary JSON contains invalid coordinates.");
+        }
+        return String.format(Locale.US, "%.8f,%.8f", lat, lng);
+    }
+
+    private String formatQrNumber(double value) {
+        return String.format(Locale.US, "%.2f", value);
     }
 
     private List<SearchWaypoint> buildLawnmowerWaypoints(List<GeoPoint> boundary,
@@ -1508,6 +1899,9 @@ public class TargetLocalizationView extends LinearLayout
         stopDetectionButton.setEnabled(detectionActive);
         startSearchButton.setEnabled(!searchActive);
         stopSearchButton.setEnabled(searchActive || searchVirtualStickEnabled);
+        if (importSearchQrButton != null) {
+            importSearchQrButton.setEnabled(!searchActive);
+        }
         centerButton.setEnabled(detectionActive && !centeringActive);
         stopCenterButton.setEnabled(centeringActive);
         captureButton.setEnabled(detectionActive);
@@ -1633,6 +2027,23 @@ public class TargetLocalizationView extends LinearLayout
             this.latitude = latitude;
             this.longitude = longitude;
             this.altitudeMeters = altitudeMeters;
+        }
+    }
+
+    private static final class TargetLocalizationQrImport {
+        final String boundaryText;
+        final String altitudeText;
+        final String spacingText;
+        final int boundaryCount;
+
+        TargetLocalizationQrImport(String boundaryText,
+                                   String altitudeText,
+                                   String spacingText,
+                                   int boundaryCount) {
+            this.boundaryText = boundaryText;
+            this.altitudeText = altitudeText;
+            this.spacingText = spacingText;
+            this.boundaryCount = boundaryCount;
         }
     }
 
