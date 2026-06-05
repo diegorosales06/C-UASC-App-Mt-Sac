@@ -123,7 +123,6 @@ public class TargetLocalizationView extends LinearLayout
     private EditText searchAltitudeEditText;
     private EditText trackSpacingEditText;
     private EditText idOverrideEditText;
-    private EditText positionTagEditText;
 
     private Button startDetectionButton;
     private Button stopDetectionButton;
@@ -133,7 +132,6 @@ public class TargetLocalizationView extends LinearLayout
     private Button centerButton;
     private Button stopCenterButton;
     private Button captureButton;
-    private Button recordPositionButton;
 
     private DronePositionCsvRecorder positionCsvRecorder;
     private ScrollView controlsScrollView;
@@ -355,29 +353,15 @@ public class TargetLocalizationView extends LinearLayout
 
         LinearLayout captureRow = makeRow(context);
         idOverrideEditText = new EditText(context);
-        idOverrideEditText.setHint("Target ID");
+        idOverrideEditText.setHint("Tag ID");
         idOverrideEditText.setSingleLine(true);
         idOverrideEditText.setInputType(InputType.TYPE_CLASS_TEXT);
         captureRow.addView(idOverrideEditText, weightedParams(true));
 
-        captureButton = makeButton(context, "Capture Target");
-        captureButton.setOnClickListener(v -> captureCurrentTarget());
+        captureButton = makeButton(context, "Capture Tag");
+        captureButton.setOnClickListener(v -> captureTagWithPosition());
         captureRow.addView(captureButton, weightedParams(false));
         controls.addView(captureRow);
-
-        LinearLayout positionRow = makeRow(context);
-
-        positionTagEditText = new EditText(context);
-        positionTagEditText.setHint("Position Tag");
-        positionTagEditText.setSingleLine(true);
-        positionTagEditText.setInputType(InputType.TYPE_CLASS_NUMBER);
-        positionRow.addView(positionTagEditText, weightedParams(true));
-
-        recordPositionButton = makeButton(context, "Record Position");
-        recordPositionButton.setOnClickListener(v -> recordCurrentDronePosition());
-        positionRow.addView(recordPositionButton, weightedParams(false));
-
-        controls.addView(positionRow);
 
         LinearLayout fileRow = makeRow(context);
         Button exportButton = makeButton(context, "Export CSV");
@@ -952,8 +936,8 @@ public class TargetLocalizationView extends LinearLayout
     }
 
     private TargetLocalizationQrImport parseTargetLocalizationQrJsonArray(JSONArray points,
-                                                                         Double altitude,
-                                                                         Double spacing)
+                                                                          Double altitude,
+                                                                          Double spacing)
             throws JSONException {
         return buildTargetLocalizationQrImport(
                 boundaryTextFromJsonArray(points), altitude, spacing);
@@ -1586,40 +1570,41 @@ public class TargetLocalizationView extends LinearLayout
     }
 
 
-    private void recordCurrentDronePosition() {
-        if (positionCsvRecorder == null) {
-            showToast("Position CSV is not ready.");
-            appendLog("Record position failed: CSV recorder unavailable.");
+    private void captureTagWithPosition() {
+        String tagId = idOverrideEditText.getText().toString().trim();
+        if (tagId.isEmpty()) {
+            showToast("Enter a Tag ID first.");
             return;
         }
 
-        String tag = positionTagEditText.getText().toString().trim();
-
-        if (tag.isEmpty()) {
-            showToast("Enter a tag first.");
+        if (positionCsvRecorder == null) {
+            showToast("Position CSV is not ready.");
+            appendLog("Capture tag failed: CSV recorder unavailable.");
             return;
         }
 
         if (!hasValidGps) {
             showToast("Waiting for valid drone GPS.");
-            appendLog("Record position blocked: no valid GPS.");
+            appendLog("Capture tag blocked: no valid GPS.");
             return;
         }
 
         try {
-            positionCsvRecorder.recordPosition(currentLat, currentLng, tag);
+            positionCsvRecorder.recordPosition(currentLat, currentLng, tagId);
 
-            showToast("Drone position recorded.");
+            showToast("Tag \"" + tagId + "\" captured.");
             appendLog(String.format(
                     Locale.US,
-                    "Recorded drone position %.8f, %.8f with tag %s.",
+                    "Captured tag \"%s\" at %.8f, %.8f.",
+                    tagId,
                     currentLat,
-                    currentLng,
-                    tag
+                    currentLng
             ));
+
+            idOverrideEditText.setText("");
         } catch (IOException e) {
             showToast("Position CSV write failed.");
-            appendLog("Record position failed: " + e.getMessage());
+            appendLog("Capture tag failed: " + e.getMessage());
         }
     }
     private void captureCurrentTarget() {
@@ -1904,11 +1889,7 @@ public class TargetLocalizationView extends LinearLayout
         }
         centerButton.setEnabled(detectionActive && !centeringActive);
         stopCenterButton.setEnabled(centeringActive);
-        captureButton.setEnabled(detectionActive);
-
-        if (recordPositionButton != null) {
-            recordPositionButton.setEnabled(positionCsvRecorder != null);
-        }
+        captureButton.setEnabled(positionCsvRecorder != null);
     }
 
     private TextView makeText(Context context, String text, float sizeSp) {
