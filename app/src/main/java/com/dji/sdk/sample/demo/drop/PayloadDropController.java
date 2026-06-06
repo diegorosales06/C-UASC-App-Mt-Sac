@@ -1,103 +1,119 @@
 package com.dji.sdk.sample.demo.drop;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
+import com.dji.sdk.sample.internal.utils.ReturnHomeCommand.MessageCallback;
+
+import dji.common.error.DJIError;
 import dji.common.flightcontroller.flightassistant.FillLightMode;
 import dji.common.util.CommonCallbacks;
+import dji.sdk.flightcontroller.FlightAssistant;
 import dji.sdk.flightcontroller.FlightController;
 
 /**
  * PayloadDropController
  *
- * Manages the payload drop state for PayloadDropMissionView.
+ * Actuates the payload release, which is wired to the downward auxiliary fill
+ * light: the pin OPENS (drops) when the fill light is ON, and is closed/loaded
+ * when it is OFF (confirmed via the LED Control screen).
  *
- * Responsibilities:
- *  - Tracks whether the payload has been dropped via hasDropped()
- *  - Executes the drop sequence via dropPayload():
- *      1. Sets the dropped flag to true
- *      2. Turns on the downward fill light via FlightAssistant.setDownwardFillLightMode()
- *         using the same logic confirmed working in LEDControlView.java
+ * Two robustness measures vs. the previous version, because the release worked
+ * from the LED screen but not mid-mission:
  *
- * Usage in PayloadDropMissionView:
- *   if (closeToDropTarget && highEnoughToDrop) {
- *       payloadDropController.dropPayload(flightController);
- *   }
- *   if (!payloadDropController.hasDropped()) { ... }
+ *  1. Forced OFF→ON transition. Some relay/servo releases only actuate on a
+ *     state CHANGE, so issuing "ON" when the light is already ON is a silent
+ *     no-op. We drive OFF first, then ON, guaranteeing a transition. The final
+ *     state is ON (= open = released).
+ *
+ *  2. Verified result + retries. The SDK's actual success/failure is reported
+ *     through a {@link MessageCallback} so it shows up on-screen (the old code
+ *     logged only to Logcat and the UI always said "dropped" regardless). If the
+ *     ON command is rejected it is retried a couple of times.
  */
 public class PayloadDropController {
 
     private static final String TAG = "PayloadDropController";
 
-    // Tracks whether the payload has been dropped this mission session
+    private static final int  ON_RETRIES         = 2;
+    private static final long TRANSITION_DELAY_MS = 300L;
+    private static final long RETRY_DELAY_MS      = 500L;
+
     private boolean dropped = false;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
-    // ---------------------------------------------------------------------------------
-    // Public API
-    // ---------------------------------------------------------------------------------
-
-    /**
-     * Returns true if the payload has already been dropped this session.
-     * Used in the control loop to prevent triggering the drop more than once.
-     *
-     * @return true if dropPayload() has already been called successfully
-     */
     public boolean hasDropped() {
         return dropped;
     }
 
-    /**
-     * Executes the payload drop sequence:
-     *  1. Sets dropped = true immediately so the control loop stops checking
-     *  2. Turns on the downward fill light via FlightAssistant using the same
-     *     FillLightMode.ON approach confirmed working in LEDControlView.java
-     *
-     * The FlightController is passed in from PayloadDropMissionView rather than
-     * stored in this class — keeps this class stateless with respect to DJI objects
-     * and avoids holding a stale reference after the view is destroyed.
-     *
-     * @param flightController the active FlightController from PayloadDropMissionView
-     */
+    /** Backwards-compatible entry point (no on-screen logging). */
     public void dropPayload(FlightController flightController) {
-        // Mark as dropped immediately — prevents double-drop if control loop
-        // ticks again before the async LED callback returns
-        dropped = true;
-
-        Log.d(TAG, "dropPayload() called — payload released.");
-
-        if (flightController == null) {
-            Log.e(TAG, "FlightController is null — cannot turn on fill light.");
-            return;
-        }
-
-        // Get FlightAssistant from FlightController — same pattern as LEDControlView
-        dji.sdk.flightcontroller.FlightAssistant flightAssistant =
-                flightController.getFlightAssistant();
-
-        if (flightAssistant == null) {
-            Log.e(TAG, "FlightAssistant unavailable — fill light not turned on.");
-            return;
-        }
-
-        // Turn on the downward fill light — same call confirmed working in LEDControlView
-        flightAssistant.setDownwardFillLightMode(FillLightMode.ON,
-                new CommonCallbacks.CompletionCallback() {
-                    @Override
-                    public void onResult(dji.common.error.DJIError error) {
-                        if (error == null) {
-                            Log.d(TAG, "Downward fill light turned ON at drop.");
-                        } else {
-                            Log.e(TAG, "Fill light failed: " + error.getDescription());
-                        }
-                    }
-                });
+        dropPayload(flightController, null);
     }
 
     /**
-     * Resets the drop state — call this when starting a new mission session
-     * so hasDropped() returns false again and the drop can be triggered once more.
+     * Releases the payload: forces a fill-light OFF→ON transition and verifies the
+     * ON command succeeded, reporting the real result through {@code log}.
      */
+    public void dropPayload(FlightController flightController, MessageCallback log) {
+        dropped = true;
+        Log.d(TAG, "dropPayload() called.");
+
+        FlightAssistant fa = flightController == null ? null : flightController.getFlightAssistant();
+        if (fa == null) {
+            report(log, "Drop FAILED: Flight Assistant unavailable — pin not actuated.");
+            return;
+        }
+
+        report(log, "Releasing payload — fill light OFF→ON...");
+        // Step 1: ensure OFF (pin closed) so the following ON is always a transition.
+        fa.setDownwardFillLightMode(FillLightMode.OFF, offError ->
+                // Step 2: after a short settle, drive ON (pin open) with retries.
+                handler.postDelayed(() -> setOn(fa, log, ON_RETRIES), TRANSITION_DELAY_MS));
+    }
+
+    private void setOn(FlightAssistant fa, MessageCallback log, int retriesLeft) {
+        fa.setDownwardFillLightMode(FillLightMode.ON, new CommonCallbacks.CompletionCallback() {
+            @Override
+            public void onResult(DJIError error) {
+                if (error == null) {
+                    report(log, "Pin OPEN — fill light ON. Payload released.");
+                } else if (retriesLeft > 0) {
+                    report(log, "Fill light ON rejected (" + error.getDescription()
+                            + "); retrying (" + retriesLeft + " left)...");
+                    handler.postDelayed(() -> setOn(fa, log, retriesLeft - 1), RETRY_DELAY_MS);
+                } else {
+                    report(log, "Drop FAILED: fill light ON rejected — " + error.getDescription());
+                }
+            }
+        });
+    }
+
+    /** Closes the pin (fill light OFF) — use to reload between drops/tests. */
+    public void closePin(FlightController flightController, MessageCallback log) {
+        FlightAssistant fa = flightController == null ? null : flightController.getFlightAssistant();
+        if (fa == null) {
+            report(log, "Cannot close pin: Flight Assistant unavailable.");
+            return;
+        }
+        fa.setDownwardFillLightMode(FillLightMode.OFF, error -> {
+            if (error == null) {
+                report(log, "Pin CLOSED — fill light OFF (ready to load).");
+            } else {
+                report(log, "Close pin failed: " + error.getDescription());
+            }
+        });
+    }
+
+    /** Resets the dropped flag so a new mission session can drop again. */
     public void reset() {
         dropped = false;
         Log.d(TAG, "PayloadDropController reset.");
+    }
+
+    private void report(MessageCallback log, String msg) {
+        Log.d(TAG, msg);
+        if (log != null) log.onMessage(msg);
     }
 }

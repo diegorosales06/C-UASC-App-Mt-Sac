@@ -205,6 +205,29 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
 
         addView(btnRow);
 
+        // ── Manual pin actuation (ground testing / reloading) ─────────────────
+        LinearLayout pinRow = new LinearLayout(context);
+        pinRow.setOrientation(HORIZONTAL);
+        pinRow.setPadding(0, 0, 0, 16);
+
+        Button btnTestDrop = new Button(context);
+        btnTestDrop.setText("Test Drop (open pin)");
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        tp.setMarginEnd(8);
+        btnTestDrop.setLayoutParams(tp);
+        btnTestDrop.setOnClickListener(v -> onTestDrop());
+        pinRow.addView(btnTestDrop);
+
+        Button btnClosePin = new Button(context);
+        btnClosePin.setText("Close Pin (load)");
+        btnClosePin.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnClosePin.setOnClickListener(v -> onClosePin());
+        pinRow.addView(btnClosePin);
+
+        addView(pinRow);
+
         tvLog = new TextView(context);
         tvLog.setText("Log:\n");
         tvLog.setTextSize(11f);
@@ -363,6 +386,30 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         });
     }
 
+    private void onTestDrop() {
+        if (flightController == null) {
+            initFlightController();
+            if (flightController == null) {
+                showToast("Flight controller not available.");
+                return;
+            }
+        }
+        appendLog("Manual test drop requested (opens pin).");
+        payloadDropController.dropPayload(flightController, this::appendLog);
+    }
+
+    private void onClosePin() {
+        if (flightController == null) {
+            initFlightController();
+            if (flightController == null) {
+                showToast("Flight controller not available.");
+                return;
+            }
+        }
+        appendLog("Closing pin (reload).");
+        payloadDropController.closePin(flightController, this::appendLog);
+    }
+
     private void onStopMission() {
         missionRunning = false;
         isTakingOff = false;
@@ -439,12 +486,10 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             if (closeToDropTarget && highEnoughToDrop) {
                 appendLog(String.format("Drop target reached! Distance: %.2fm", distanceM));
                 sendVelocityCommand(0, 0, 0);
-                payloadDropController.dropPayload(flightController);
                 hasDropped = true;
-                appendLog("Payload dropped! Initiating RTH.");
                 missionRunning = false;
                 if (flightLogger != null) flightLogger.stop();
-                holdBeforeReturnHome();
+                releasePayloadThenReturnHome();
                 return;
             }
         }
@@ -476,6 +521,30 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             if (error != null) appendLog("Error disabling Virtual Stick: " + error.getDescription());
             appendLog("Starting RTH with aircraft's current home point.");
             startGoHome();
+        });
+    }
+
+    /**
+     * Disables Virtual Stick, actuates the payload release, then holds before RTH.
+     *
+     * The release is a FlightAssistant fill-light command. Issuing it while
+     * Virtual Stick still owns the flight controller is the one thing different
+     * from the LED Control screen (which works), so we hand control back first.
+     * With Virtual Stick off the aircraft holds a GPS hover at the drop point.
+     */
+    private void releasePayloadThenReturnHome() {
+        if (flightController == null) {
+            payloadDropController.dropPayload(null, this::appendLog);
+            holdBeforeReturnHome();
+            return;
+        }
+        appendLog("At drop point — disabling Virtual Stick to release payload.");
+        flightController.setVirtualStickModeEnabled(false, error -> {
+            if (error != null) {
+                appendLog("Virtual Stick disable before drop failed: " + error.getDescription());
+            }
+            payloadDropController.dropPayload(flightController, this::appendLog);
+            holdBeforeReturnHome();
         });
     }
 

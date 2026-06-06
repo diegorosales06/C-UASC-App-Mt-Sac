@@ -1,6 +1,8 @@
 package com.dji.sdk.sample.demo.searchrecord;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.text.InputType;
@@ -18,7 +20,10 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 
 import com.dji.sdk.sample.R;
+import com.dji.sdk.sample.demo.virtualstickwaypoint.QrWaypointScanActivity;
 import com.dji.sdk.sample.internal.view.PresentableView;
+
+import java.util.Locale;
 
 import dji.sdk.camera.VideoFeeder;
 import dji.sdk.codec.DJICodecManager;
@@ -59,6 +64,7 @@ public class SearchRecordView extends LinearLayout
     private EditText etAltitude;
     private EditText etMaxSpeed;
     private EditText etSpacing;
+    private Button   btnImportQr;
 
     private Button btnStart;
     private Button btnStop;
@@ -102,6 +108,7 @@ public class SearchRecordView extends LinearLayout
     @Override
     protected void onDetachedFromWindow() {
         controller.onDetached();
+        QrWaypointScanActivity.clearResultListener();
         unregisterVideoFeed();
         if (codecManager != null) {
             codecManager.cleanSurface();
@@ -157,6 +164,13 @@ public class SearchRecordView extends LinearLayout
         TextView cornersHeader = makeText(context, "── Search box corners (perimeter order) ──", 13f);
         cornersHeader.setPadding(0, 16, 0, 4);
         controls.addView(cornersHeader);
+
+        btnImportQr = new Button(context);
+        btnImportQr.setText("Import 4 Corners from QR");
+        btnImportQr.setOnClickListener(v -> onImportCornersQr());
+        controls.addView(btnImportQr, new LinearLayout.LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
         for (int i = 0; i < 4; i++) {
             controls.addView(buildCornerRow(context, i));
         }
@@ -274,6 +288,37 @@ public class SearchRecordView extends LinearLayout
         }
     }
 
+    // ── QR corner import ────────────────────────────────────────────────────────
+
+    private void onImportCornersQr() {
+        Context ctx = getContext();
+        if (!(ctx instanceof Activity)) {
+            showToast("QR scanner needs an activity context.");
+            return;
+        }
+        QrWaypointScanActivity.setResultListener(
+                payload -> post(() -> handleBoundaryQrPayload(payload)));
+        ctx.startActivity(new Intent(ctx, QrWaypointScanActivity.class));
+        onLogMessage("QR scanner opened — scan the 4-corner boundary code.");
+    }
+
+    private void handleBoundaryQrPayload(String payload) {
+        final double[][] corners;
+        try {
+            corners = BoundaryQrParser.parse(payload);
+        } catch (IllegalArgumentException e) {
+            showToast(e.getMessage());
+            onLogMessage("QR import failed: " + e.getMessage());
+            return;
+        }
+        for (int i = 0; i < 4; i++) {
+            cornerLat[i].setText(String.format(Locale.US, "%.7f", corners[i][0]));
+            cornerLng[i].setText(String.format(Locale.US, "%.7f", corners[i][1]));
+        }
+        onLogMessage("Imported 4 boundary corners from QR.");
+        showToast("4 corners loaded from QR.");
+    }
+
     private double parseRequired(EditText field, String label) {
         String s = field.getText().toString().trim();
         if (s.isEmpty()) {
@@ -374,6 +419,7 @@ public class SearchRecordView extends LinearLayout
         etAltitude.setEnabled(!missionActive);
         etMaxSpeed.setEnabled(!missionActive);
         etSpacing.setEnabled(!missionActive);
+        btnImportQr.setEnabled(!missionActive);
         if (!missionActive) {
             tvTarget.setText("Target: —");
         }
