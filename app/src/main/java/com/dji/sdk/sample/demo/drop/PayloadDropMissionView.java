@@ -173,6 +173,20 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         etDropLng.setText(String.valueOf(dropTargetLng));
         etDropAlt.setText(String.valueOf(dropTargetAlt));
 
+        // Persist the drop target the moment it is edited — not only on Start —
+        // so a typed coordinate survives switching mission modes / leaving the
+        // screen (this view is recreated and reloads from DropTargetStore).
+        android.text.TextWatcher dropTargetWatcher = new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                persistDropTargetFromFields();
+            }
+        };
+        etDropLat.addTextChangedListener(dropTargetWatcher);
+        etDropLng.addTextChangedListener(dropTargetWatcher);
+        etDropAlt.addTextChangedListener(dropTargetWatcher);
+
         addView(dropInputRow);
 
         LinearLayout btnRow = new LinearLayout(context);
@@ -384,6 +398,39 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
 
             startControlLoop();
         });
+    }
+
+    /**
+     * Parses the drop-target fields and saves them to DropTargetStore if lat/lng
+     * are valid. Called on every edit so the coordinate persists across mission
+     * mode switches / view recreation without needing to press Start. Partial or
+     * invalid input (mid-typing) is ignored, keeping the last valid saved value.
+     */
+    private void persistDropTargetFromFields() {
+        String latStr = etDropLat.getText().toString().trim();
+        String lngStr = etDropLng.getText().toString().trim();
+        String altStr = etDropAlt.getText().toString().trim();
+        if (latStr.isEmpty() || lngStr.isEmpty()) return;
+
+        double lat, lng;
+        float alt;
+        try {
+            lat = Double.parseDouble(latStr);
+            lng = Double.parseDouble(lngStr);
+            alt = altStr.isEmpty() ? DropTargetStore.DEFAULT_DROP_ALT : Float.parseFloat(altStr);
+        } catch (NumberFormatException e) {
+            return; // mid-typing / invalid — keep the last saved value
+        }
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+        if (Float.isNaN(alt) || Float.isInfinite(alt) || alt < 0f) {
+            alt = DropTargetStore.DEFAULT_DROP_ALT;
+        }
+
+        dropTargetLat = lat;
+        dropTargetLng = lng;
+        dropTargetAlt = alt;
+        dropTargetSet = true;
+        DropTargetStore.save(getContext(), lat, lng, alt);
     }
 
     private void onTestDrop() {
@@ -646,6 +693,9 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+        // Catch-all: make sure the latest typed coordinate is saved before this
+        // view is torn down (e.g. switching mission modes).
+        persistDropTargetFromFields();
         if (missionRunning || isTakingOff || returnHomePending) {
             missionRunning = false;
             isTakingOff = false;
