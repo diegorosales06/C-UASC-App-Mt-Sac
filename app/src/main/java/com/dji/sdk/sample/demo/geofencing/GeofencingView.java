@@ -63,20 +63,27 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     private static final String PREFS_KEY_LAT   = "waypoint_lat_"; // + index
     private static final String PREFS_KEY_LNG   = "waypoint_lng_"; // + index
 
+    // Inner (exclusion) fence SharedPreferences keys
+    private static final String PREFS_INNER_COUNT = "inner_waypoint_count";
+    private static final String PREFS_INNER_LAT   = "inner_waypoint_lat_"; // + index
+    private static final String PREFS_INNER_LNG   = "inner_waypoint_lng_"; // + index
+
     // ---------------------------------------------------------------------------------
     // Static state — persists across view destruction/recreation within a session
     // ---------------------------------------------------------------------------------
     private static final List<double[]> fenceVertices = new ArrayList<>();
+    /** Inner exclusion zone — drone must NOT enter this polygon. */
+    private static final List<double[]> innerFenceVertices = new ArrayList<>();
     private static boolean fenceActive    = false;
     private static boolean verticesLoaded = false; // ensures we only load from prefs once per session
 
     // Default hardcoded fence vertices (Mt. SAC area)
     // These are pre-loaded on first launch; user can add/clear from here
     private static final double[][] DEFAULT_VERTICES = {
-        {  34.04618635227991, -117.84552701364355 },
-        {  34.04632498120861, -117.84524530311664 },
-        {  34.04658300697332, -117.84539805413424 },
-        {  34.04646801720643, -117.84579969397946 }
+            {  34.04618635227991, -117.84552701364355 },
+            {  34.04632498120861, -117.84524530311664 },
+            {  34.04658300697332, -117.84539805413424 },
+            {  34.04646801720643, -117.84579969397946 }
     };
 
     // ---------------------------------------------------------------------------------
@@ -91,6 +98,14 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     private Button     btnAddWaypoint;
     private Button     btnClearWaypoints;
     private Button     btnImportCsv;
+    // Inner (exclusion) fence UI
+    private TextView   tvInnerWaypointList;
+    private EditText   etInnerLat;
+    private EditText   etInnerLng;
+    private EditText   etInnerCsvImport;
+    private Button     btnAddInnerWaypoint;
+    private Button     btnClearInnerWaypoints;
+    private Button     btnImportInnerCsv;
     private Button     btnStartFence;
     private Button     btnStopFence;
     private ScrollView scrollLog;
@@ -162,6 +177,13 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         addView(tvDronePos);
 
         // --- Lat/Lng input row ---
+        TextView tvOuterHeader = new TextView(context);
+        tvOuterHeader.setText("── Outer Boundary Fence (drone cannot fly OUT of) ──");
+        tvOuterHeader.setTextSize(13f);
+        tvOuterHeader.setTextColor(android.graphics.Color.parseColor("#1565C0"));
+        tvOuterHeader.setPadding(0, 8, 0, 4);
+        addView(tvOuterHeader);
+
         LinearLayout inputRow = new LinearLayout(context);
         inputRow.setOrientation(HORIZONTAL);
 
@@ -239,6 +261,91 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         tvWaypointList.setPadding(0, 0, 0, 12);
         addView(tvWaypointList);
 
+        // =============================================================================
+        // INNER (EXCLUSION) GEOFENCE — drone must NOT enter this zone
+        // =============================================================================
+
+        TextView tvInnerHeader = new TextView(context);
+        tvInnerHeader.setText("── Inner Exclusion Zone (drone cannot fly INTO) ──");
+        tvInnerHeader.setTextSize(13f);
+        tvInnerHeader.setTextColor(android.graphics.Color.parseColor("#B71C1C"));
+        tvInnerHeader.setPadding(0, 16, 0, 4);
+        addView(tvInnerHeader);
+
+        LinearLayout innerInputRow = new LinearLayout(context);
+        innerInputRow.setOrientation(HORIZONTAL);
+
+        etInnerLat = new EditText(context);
+        etInnerLat.setHint("Latitude");
+        etInnerLat.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        LinearLayout.LayoutParams etIP1 = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        etIP1.setMarginEnd(8);
+        etInnerLat.setLayoutParams(etIP1);
+        innerInputRow.addView(etInnerLat);
+
+        etInnerLng = new EditText(context);
+        etInnerLng.setHint("Longitude");
+        etInnerLng.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        LinearLayout.LayoutParams etIP2 = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        etInnerLng.setLayoutParams(etIP2);
+        innerInputRow.addView(etInnerLng);
+
+        addView(innerInputRow);
+
+        TextView tvInnerCsvLabel = new TextView(context);
+        tvInnerCsvLabel.setText("Inner zone bulk import (lat,lng lines):");
+        tvInnerCsvLabel.setTextSize(12f);
+        tvInnerCsvLabel.setPadding(0, 12, 0, 4);
+        addView(tvInnerCsvLabel);
+
+        etInnerCsvImport = new EditText(context);
+        etInnerCsvImport.setHint("e.g.\n34.046186, -117.845527\n34.046324, -117.845245");
+        etInnerCsvImport.setMinLines(3);
+        etInnerCsvImport.setMaxLines(6);
+        etInnerCsvImport.setGravity(android.view.Gravity.TOP);
+        etInnerCsvImport.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        addView(etInnerCsvImport);
+
+        btnImportInnerCsv = new Button(context);
+        btnImportInnerCsv.setText("Import Inner CSV Points");
+        btnImportInnerCsv.setOnClickListener(v -> onImportInnerCsv());
+        addView(btnImportInnerCsv);
+
+        LinearLayout innerBtnRow = new LinearLayout(context);
+        innerBtnRow.setOrientation(HORIZONTAL);
+        innerBtnRow.setPadding(0, 8, 0, 8);
+
+        btnAddInnerWaypoint = new Button(context);
+        btnAddInnerWaypoint.setText("Add Inner Point");
+        LinearLayout.LayoutParams bIP1 = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        bIP1.setMarginEnd(8);
+        btnAddInnerWaypoint.setLayoutParams(bIP1);
+        btnAddInnerWaypoint.setOnClickListener(v -> onAddInnerWaypoint());
+        innerBtnRow.addView(btnAddInnerWaypoint);
+
+        btnClearInnerWaypoints = new Button(context);
+        btnClearInnerWaypoints.setText("Clear Inner");
+        LinearLayout.LayoutParams bIP2 = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btnClearInnerWaypoints.setLayoutParams(bIP2);
+        btnClearInnerWaypoints.setOnClickListener(v -> onClearInnerWaypoints());
+        innerBtnRow.addView(btnClearInnerWaypoints);
+
+        addView(innerBtnRow);
+
+        tvInnerWaypointList = new TextView(context);
+        tvInnerWaypointList.setTextSize(12f);
+        tvInnerWaypointList.setPadding(0, 0, 0, 12);
+        addView(tvInnerWaypointList);
+
         // --- Start / Stop fence ---
         LinearLayout btnRow2 = new LinearLayout(context);
         btnRow2.setOrientation(HORIZONTAL);
@@ -282,6 +389,7 @@ public class GeofencingView extends LinearLayout implements PresentableView {
 
         // Restore UI to match persisted state
         refreshWaypointList();
+        refreshInnerWaypointList();
         syncButtonState();
 
         // Grab the flight controller
@@ -389,7 +497,84 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         fenceVertices.clear();
         saveWaypointsToPrefs(getContext());
         refreshWaypointList();
-        appendLog("Cleared all waypoints.");
+        appendLog("Cleared all outer waypoints.");
+    }
+
+    private void onAddInnerWaypoint() {
+        String latStr = etInnerLat.getText().toString().trim();
+        String lngStr = etInnerLng.getText().toString().trim();
+
+        if (latStr.isEmpty() || lngStr.isEmpty()) {
+            showToast("Please enter both latitude and longitude.");
+            return;
+        }
+
+        double lat, lng;
+        try {
+            lat = Double.parseDouble(latStr);
+            lng = Double.parseDouble(lngStr);
+        } catch (NumberFormatException e) {
+            showToast("Invalid coordinates.");
+            return;
+        }
+
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            showToast("Coordinates out of valid range.");
+            return;
+        }
+
+        innerFenceVertices.add(new double[]{lat, lng});
+        saveWaypointsToPrefs(getContext());
+        etInnerLat.setText("");
+        etInnerLng.setText("");
+        refreshInnerWaypointList();
+        appendLog(String.format("Added inner waypoint %d: (%.6f, %.6f)",
+                innerFenceVertices.size(), lat, lng));
+    }
+
+    private void onImportInnerCsv() {
+        String raw = etInnerCsvImport.getText().toString().trim();
+        if (raw.isEmpty()) {
+            showToast("Paste some CSV points first.");
+            return;
+        }
+
+        int added = 0;
+        for (String line : raw.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            if (line.toLowerCase().contains("lat")) continue;
+            String[] parts = line.split(",");
+            if (parts.length < 2) continue;
+            try {
+                double lat = Double.parseDouble(parts[0].trim());
+                double lng = Double.parseDouble(parts[1].trim());
+                if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                    innerFenceVertices.add(new double[]{lat, lng});
+                    added++;
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+
+        if (added > 0) {
+            saveWaypointsToPrefs(getContext());
+            refreshInnerWaypointList();
+            etInnerCsvImport.setText("");
+            appendLog("Imported " + added + " inner waypoints from CSV.");
+        } else {
+            showToast("No valid points found. Format: lat,lng per line.");
+        }
+    }
+
+    private void onClearInnerWaypoints() {
+        if (fenceActive) {
+            showToast("Stop the fence before clearing inner waypoints.");
+            return;
+        }
+        innerFenceVertices.clear();
+        saveWaypointsToPrefs(getContext());
+        refreshInnerWaypointList();
+        appendLog("Cleared all inner waypoints.");
     }
 
     private void onStartFence() {
@@ -407,7 +592,10 @@ public class GeofencingView extends LinearLayout implements PresentableView {
 
         fenceActive = true;
         syncButtonState();
-        appendLog("Fence activated with " + fenceVertices.size() + " vertices.");
+        appendLog("Fence activated with " + fenceVertices.size() + " outer vertices"
+                + (innerFenceVertices.isEmpty()
+                ? " (no inner exclusion zone)."
+                : " + " + innerFenceVertices.size() + " inner exclusion vertices."));
 
         flightLogger = new FlightLogger(getContext());
         flightLogger.start();
@@ -451,20 +639,27 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         if (!fenceActive) return;
 
         boolean inside = isPointInPolygon(droneLat, droneLng, fenceVertices);
+        boolean inExclusion = !innerFenceVertices.isEmpty()
+                && isPointInPolygon(droneLat, droneLng, innerFenceVertices);
 
         // Log position and inside flag to Logcat on every tick
-        Log.d(TAG, "lat=" + droneLat + "  lng=" + droneLng + "  inside=" + inside);
+        Log.d(TAG, "lat=" + droneLat + "  lng=" + droneLng
+                + "  inside=" + inside + "  inExclusion=" + inExclusion);
 
         // Also print to the on-screen log when the fence view is visible.
         appendActiveLog(String.format(
-                "lat=%.6f  lng=%.6f  inside=%s", droneLat, droneLng, inside));
+                "lat=%.6f  lng=%.6f  inside=%s  exclusion=%s",
+                droneLat, droneLng, inside, inExclusion));
 
         // Write to CSV file
         if (flightLogger != null) {
-            flightLogger.log(droneLat, droneLng, inside);
+            flightLogger.log(droneLat, droneLng, inside && !inExclusion);
         }
 
-        if (!inside) {
+        boolean breach = !inside || inExclusion;
+        String breachReason = !inside ? "exited outer boundary" : "entered inner exclusion zone";
+
+        if (breach) {
             fenceActive = false;
 
             // Stop the logger on breach
@@ -473,12 +668,14 @@ public class GeofencingView extends LinearLayout implements PresentableView {
             }
 
             appendActiveLog(String.format(
-                    "BREACH at (%.6f, %.6f) — initiating RTH.", droneLat, droneLng));
+                    "BREACH at (%.6f, %.6f) — %s — initiating RTH.",
+                    droneLat, droneLng, breachReason));
             GeofencingView view = activeUiView;
             if (view != null) {
+                final String reason = breachReason;
                 view.post(() -> {
                     view.syncButtonState();
-                    view.tvStatus.setText("Fence: BREACH — RTH issued");
+                    view.tvStatus.setText("Fence: BREACH (" + reason + ") — RTH issued");
                 });
             }
 
@@ -535,22 +732,22 @@ public class GeofencingView extends LinearLayout implements PresentableView {
     private static void startGoHome(FlightController controller, int retriesRemaining) {
         ReturnHomeCommand.setGoHomeHeightToCurrentAltitude(controller, GeofencingView::appendActiveLog, () ->
                 controller.startGoHome(new CommonCallbacks.CompletionCallback() {
-            @Override
-            public void onResult(DJIError djiError) {
-                if (djiError == null) {
-                    appendActiveLog("RTH command accepted by flight controller.");
-                    return;
-                }
+                    @Override
+                    public void onResult(DJIError djiError) {
+                        if (djiError == null) {
+                            appendActiveLog("RTH command accepted by flight controller.");
+                            return;
+                        }
 
-                appendActiveLog("RTH command failed: " + djiError.getDescription());
-                if (retriesRemaining > 0) {
-                    appendActiveLog("Retrying geofence RTH command.");
-                    SAFETY_HANDLER.postDelayed(
-                            () -> startGoHome(controller, retriesRemaining - 1),
-                            1000L);
-                }
-            }
-        }));
+                        appendActiveLog("RTH command failed: " + djiError.getDescription());
+                        if (retriesRemaining > 0) {
+                            appendActiveLog("Retrying geofence RTH command.");
+                            SAFETY_HANDLER.postDelayed(
+                                    () -> startGoHome(controller, retriesRemaining - 1),
+                                    1000L);
+                        }
+                    }
+                }));
     }
 
     // ---------------------------------------------------------------------------------
@@ -561,6 +758,7 @@ public class GeofencingView extends LinearLayout implements PresentableView {
         SharedPreferences.Editor editor = context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit();
+        // Outer fence
         editor.putInt(PREFS_KEY_COUNT, fenceVertices.size());
         for (int i = 0; i < fenceVertices.size(); i++) {
             editor.putLong(PREFS_KEY_LAT + i,
@@ -568,35 +766,64 @@ public class GeofencingView extends LinearLayout implements PresentableView {
             editor.putLong(PREFS_KEY_LNG + i,
                     Double.doubleToRawLongBits(fenceVertices.get(i)[1]));
         }
+        // Inner fence
+        editor.putInt(PREFS_INNER_COUNT, innerFenceVertices.size());
+        for (int i = 0; i < innerFenceVertices.size(); i++) {
+            editor.putLong(PREFS_INNER_LAT + i,
+                    Double.doubleToRawLongBits(innerFenceVertices.get(i)[0]));
+            editor.putLong(PREFS_INNER_LNG + i,
+                    Double.doubleToRawLongBits(innerFenceVertices.get(i)[1]));
+        }
         editor.apply();
-        Log.d(TAG, "Saved " + fenceVertices.size() + " waypoints to SharedPreferences.");
+        Log.d(TAG, "Saved " + fenceVertices.size() + " outer + "
+                + innerFenceVertices.size() + " inner waypoints to SharedPreferences.");
     }
 
     private void loadWaypointsFromPrefs(Context context) {
         SharedPreferences prefs = context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+
+        // Outer fence
         int count = prefs.getInt(PREFS_KEY_COUNT, -1);
-
         fenceVertices.clear();
-
         if (count <= 0) {
             for (double[] vertex : DEFAULT_VERTICES) {
                 fenceVertices.add(new double[]{vertex[0], vertex[1]});
             }
-            Log.d(TAG, "No saved waypoints found — loaded " + fenceVertices.size() + " default vertices.");
+            Log.d(TAG, "No saved outer waypoints — loaded " + fenceVertices.size() + " defaults.");
         } else {
             for (int i = 0; i < count; i++) {
                 double lat = Double.longBitsToDouble(prefs.getLong(PREFS_KEY_LAT + i, 0));
                 double lng = Double.longBitsToDouble(prefs.getLong(PREFS_KEY_LNG + i, 0));
                 fenceVertices.add(new double[]{lat, lng});
             }
-            Log.d(TAG, "Loaded " + fenceVertices.size() + " waypoints from SharedPreferences.");
+            Log.d(TAG, "Loaded " + fenceVertices.size() + " outer waypoints from SharedPreferences.");
         }
+
+        // Inner fence
+        int innerCount = prefs.getInt(PREFS_INNER_COUNT, 0);
+        innerFenceVertices.clear();
+        for (int i = 0; i < innerCount; i++) {
+            double lat = Double.longBitsToDouble(prefs.getLong(PREFS_INNER_LAT + i, 0));
+            double lng = Double.longBitsToDouble(prefs.getLong(PREFS_INNER_LNG + i, 0));
+            innerFenceVertices.add(new double[]{lat, lng});
+        }
+        Log.d(TAG, "Loaded " + innerFenceVertices.size() + " inner waypoints from SharedPreferences.");
     }
 
     // ---------------------------------------------------------------------------------
     // Geometry: Ray-Casting Point-in-Polygon
     // ---------------------------------------------------------------------------------
+
+    /** Returns a snapshot of the current outer boundary fence vertices. */
+    public static List<double[]> getOuterFenceVertices() {
+        return new ArrayList<>(fenceVertices);
+    }
+
+    /** Returns a snapshot of the current inner exclusion fence vertices. */
+    public static List<double[]> getInnerFenceVertices() {
+        return new ArrayList<>(innerFenceVertices);
+    }
 
     static boolean isPointInPolygon(double lat, double lng, List<double[]> polygon) {
         int n = polygon.size();
@@ -626,29 +853,49 @@ public class GeofencingView extends LinearLayout implements PresentableView {
 
     private void syncButtonState() {
         boolean active = fenceActive;
-        if (btnStartFence     != null) btnStartFence.setEnabled(!active);
-        if (btnStopFence      != null) btnStopFence.setEnabled(active);
-        if (btnAddWaypoint    != null) btnAddWaypoint.setEnabled(!active);
-        if (btnClearWaypoints != null) btnClearWaypoints.setEnabled(!active);
-        if (btnImportCsv      != null) btnImportCsv.setEnabled(!active);
+        if (btnStartFence        != null) btnStartFence.setEnabled(!active);
+        if (btnStopFence         != null) btnStopFence.setEnabled(active);
+        if (btnAddWaypoint       != null) btnAddWaypoint.setEnabled(!active);
+        if (btnClearWaypoints    != null) btnClearWaypoints.setEnabled(!active);
+        if (btnImportCsv         != null) btnImportCsv.setEnabled(!active);
+        if (btnAddInnerWaypoint  != null) btnAddInnerWaypoint.setEnabled(!active);
+        if (btnClearInnerWaypoints != null) btnClearInnerWaypoints.setEnabled(!active);
+        if (btnImportInnerCsv    != null) btnImportInnerCsv.setEnabled(!active);
         if (tvStatus != null) {
             tvStatus.setText(active
-                    ? "Fence: ACTIVE  (" + fenceVertices.size() + " vertices)"
+                    ? "Fence: ACTIVE  (" + fenceVertices.size() + " outer"
+                    + (innerFenceVertices.isEmpty()
+                    ? ", no exclusion zone)"
+                    : ", " + innerFenceVertices.size() + " inner exclusion)")
                     : "Fence: INACTIVE");
         }
     }
 
     private void refreshWaypointList() {
         if (fenceVertices.isEmpty()) {
-            tvWaypointList.setText("Waypoints: (none)");
+            tvWaypointList.setText("Outer Waypoints: (none)");
             return;
         }
-        StringBuilder sb = new StringBuilder("Waypoints:\n");
+        StringBuilder sb = new StringBuilder("Outer Waypoints:\n");
         for (int i = 0; i < fenceVertices.size(); i++) {
             sb.append(String.format("  %d: (%.6f, %.6f)\n",
                     i + 1, fenceVertices.get(i)[0], fenceVertices.get(i)[1]));
         }
         tvWaypointList.setText(sb.toString());
+    }
+
+    private void refreshInnerWaypointList() {
+        if (tvInnerWaypointList == null) return;
+        if (innerFenceVertices.isEmpty()) {
+            tvInnerWaypointList.setText("Inner Exclusion Points: (none — exclusion zone inactive)");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Inner Exclusion Points:\n");
+        for (int i = 0; i < innerFenceVertices.size(); i++) {
+            sb.append(String.format("  %d: (%.6f, %.6f)\n",
+                    i + 1, innerFenceVertices.get(i)[0], innerFenceVertices.get(i)[1]));
+        }
+        tvInnerWaypointList.setText(sb.toString());
     }
 
     private void appendLog(String message) {

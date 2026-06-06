@@ -41,6 +41,7 @@ public class MapAddInView extends FrameLayout {
     private final Button clearTrailButton;
 
     private final List<MapPoint> geofencePoints = new ArrayList<>();
+    private final List<MapPoint> innerGeofencePoints = new ArrayList<>();
     private final List<MapPoint> missionWaypoints = new ArrayList<>();
     private final List<MapPoint> circuitPoints = new ArrayList<>();
     private final List<MapPoint> trailPoints = new ArrayList<>();
@@ -152,6 +153,12 @@ public class MapAddInView extends FrameLayout {
         runJs("window.mapAddIn.setGeofence(" + toJsonArray(geofencePoints) + ");");
     }
 
+    public void setInnerGeofence(List<MapPoint> points) {
+        innerGeofencePoints.clear();
+        innerGeofencePoints.addAll(points);
+        runJs("window.mapAddIn.setInnerGeofence(" + toJsonArray(innerGeofencePoints) + ");");
+    }
+
     public void setMissionWaypoints(List<MapPoint> points) {
         missionWaypoints.clear();
         missionWaypoints.addAll(points);
@@ -209,6 +216,7 @@ public class MapAddInView extends FrameLayout {
         runJs("window.mapAddIn.setBaseLayer('" + (imageryMap ? "imagery" : "streets") + "');");
         runJs("window.mapAddIn.setFollow(" + followDrone + ");");
         runJs("window.mapAddIn.setGeofence(" + toJsonArray(geofencePoints) + ");");
+        runJs("window.mapAddIn.setInnerGeofence(" + toJsonArray(innerGeofencePoints) + ");");
         runJs("window.mapAddIn.setMissionWaypoints(" + toJsonArray(missionWaypoints) + ");");
         runJs("window.mapAddIn.setCircuitPoints(" + toJsonArray(circuitPoints) + ");");
         runJs("window.mapAddIn.setDropPoint(" + toJsonPoint(dropPoint) + ");");

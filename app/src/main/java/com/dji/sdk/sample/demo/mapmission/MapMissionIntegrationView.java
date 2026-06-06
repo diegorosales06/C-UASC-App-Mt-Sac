@@ -55,6 +55,11 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
     private static final String GEOFENCE_PREFS_KEY_LAT = "waypoint_lat_";
     private static final String GEOFENCE_PREFS_KEY_LNG = "waypoint_lng_";
 
+    // Inner (exclusion) fence SharedPreferences keys — must match GeofencingView
+    private static final String INNER_FENCE_PREFS_KEY_COUNT = "inner_waypoint_count";
+    private static final String INNER_FENCE_PREFS_KEY_LAT   = "inner_waypoint_lat_";
+    private static final String INNER_FENCE_PREFS_KEY_LNG   = "inner_waypoint_lng_";
+
     private static final int MAP_HEIGHT_DP = 450;
     private static final long MAP_REFRESH_MS = 2500L;
 
@@ -88,6 +93,7 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
     private MissionMode currentMode;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<MapPoint> cachedFenceVertices = new ArrayList<>();
+    private final List<MapPoint> cachedInnerFenceVertices = new ArrayList<>();
     private MapPoint latestAircraftLocation;
     private double latestHeadingDegrees;
     private DJIKey aircraftLocationKey;
@@ -341,6 +347,11 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
         cachedFenceVertices.clear();
         cachedFenceVertices.addAll(loadGeofencePoints(getContext()));
         mapAddInView.setGeofence(cachedFenceVertices);
+
+        cachedInnerFenceVertices.clear();
+        cachedInnerFenceVertices.addAll(loadInnerGeofencePoints(getContext()));
+        mapAddInView.setInnerGeofence(cachedInnerFenceVertices);
+
         mapAddInView.setMissionWaypoints(loadVirtualStickWaypointPoints(getContext()));
         mapAddInView.setCircuitPoints(loadTimeTrialGatePoints(getContext()));
 
@@ -364,6 +375,21 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
         for (int i = 0; i < count; i++) {
             double lat = Double.longBitsToDouble(prefs.getLong(GEOFENCE_PREFS_KEY_LAT + i, 0L));
             double lng = Double.longBitsToDouble(prefs.getLong(GEOFENCE_PREFS_KEY_LNG + i, 0L));
+            if (isValidCoordinate(lat, lng)) {
+                points.add(new MapPoint(lat, lng));
+            }
+        }
+        return points;
+    }
+
+    private List<MapPoint> loadInnerGeofencePoints(Context context) {
+        SharedPreferences prefs = context.getApplicationContext()
+                .getSharedPreferences(GEOFENCE_PREFS_NAME, Context.MODE_PRIVATE);
+        int count = prefs.getInt(INNER_FENCE_PREFS_KEY_COUNT, 0);
+        List<MapPoint> points = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            double lat = Double.longBitsToDouble(prefs.getLong(INNER_FENCE_PREFS_KEY_LAT + i, 0L));
+            double lng = Double.longBitsToDouble(prefs.getLong(INNER_FENCE_PREFS_KEY_LNG + i, 0L));
             if (isValidCoordinate(lat, lng)) {
                 points.add(new MapPoint(lat, lng));
             }
@@ -468,8 +494,14 @@ public class MapMissionIntegrationView extends LinearLayout implements Presentab
                 : bearingDegrees(latestAircraftLocation, point);
         latestAircraftLocation = point;
         latestHeadingDegrees = heading;
-        mapAddInView.updateDrone(point, altitude, heading,
-                isInsideFence(point, cachedFenceVertices));
+
+        boolean insideOuter = isInsideFence(point, cachedFenceVertices);
+        boolean insideInner = !cachedInnerFenceVertices.isEmpty()
+                && isInsideFence(point, cachedInnerFenceVertices);
+        // "safe" = inside outer boundary AND outside any exclusion zone
+        boolean safe = insideOuter && !insideInner;
+
+        mapAddInView.updateDrone(point, altitude, heading, safe);
     }
 
     private void syncModeButtons() {

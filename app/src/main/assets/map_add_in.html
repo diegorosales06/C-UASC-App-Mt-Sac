@@ -44,7 +44,7 @@
 <body>
 <div id="map"></div>
 <div id="load-message">Loading free map tiles...</div>
-    <script src="leaflet/leaflet.js"></script>
+<script src="leaflet/leaflet.js"></script>
 <script>
     (function () {
         const IMAGERY_MAX_ZOOM = 20;
@@ -54,6 +54,7 @@
         let baseLayer;
         let followDrone = true;
         let geofenceLayer = null;
+        let innerGeofenceLayer = null;
         let missionRouteLayer = null;
         let circuitRouteLayer = null;
         let trailLayer = null;
@@ -62,6 +63,7 @@
         let waypointLayer = L.layerGroup();
         let circuitLayer = L.layerGroup();
         let geofencePoints = [];
+        let innerGeofencePoints = [];
         let missionWaypoints = [];
         let circuitPoints = [];
         let trailPoints = [];
@@ -144,6 +146,24 @@
                 opacity: 0.95,
                 fillColor: "#168260",
                 fillOpacity: 0.22
+            }).addTo(map);
+        }
+
+        function redrawInnerGeofence() {
+            if (innerGeofenceLayer) {
+                map.removeLayer(innerGeofenceLayer);
+                innerGeofenceLayer = null;
+            }
+            if (innerGeofencePoints.length < 3) {
+                return;
+            }
+            innerGeofenceLayer = L.polygon(innerGeofencePoints.map(toLatLng), {
+                color: "#c0392b",
+                weight: 2,
+                opacity: 0.95,
+                fillColor: "#c0392b",
+                fillOpacity: 0.25,
+                dashArray: "6, 4"
             }).addTo(map);
         }
 
@@ -249,6 +269,7 @@
         function collectBoundsPoints() {
             const points = []
                 .concat(geofencePoints)
+                .concat(innerGeofencePoints)
                 .concat(missionWaypoints)
                 .concat(circuitPoints)
                 .concat(trailPoints);
@@ -290,6 +311,11 @@
             setGeofence: function (points) {
                 geofencePoints = points || [];
                 redrawGeofence();
+            },
+
+            setInnerGeofence: function (points) {
+                innerGeofencePoints = points || [];
+                redrawInnerGeofence();
             },
 
             setMissionWaypoints: function (points) {
