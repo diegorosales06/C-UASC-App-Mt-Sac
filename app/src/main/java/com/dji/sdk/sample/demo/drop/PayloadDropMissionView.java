@@ -1,11 +1,15 @@
 package com.dji.sdk.sample.demo.drop;
 
 import android.content.Context;
+import android.graphics.Color;
+import android.graphics.SurfaceTexture;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -32,12 +36,18 @@ import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
 import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
 import dji.common.flightcontroller.virtualstick.VerticalControlMode;
 import dji.common.flightcontroller.virtualstick.YawControlMode;
+import dji.common.gimbal.Rotation;
+import dji.common.gimbal.RotationMode;
 import dji.common.model.LocationCoordinate2D;
 import dji.common.util.CommonCallbacks;
+import dji.sdk.camera.VideoFeeder;
+import dji.sdk.codec.DJICodecManager;
 import dji.sdk.flightcontroller.FlightController;
+import dji.sdk.gimbal.Gimbal;
 import dji.sdk.products.Aircraft;
 
-public class PayloadDropMissionView extends LinearLayout implements PresentableView {
+public class PayloadDropMissionView extends LinearLayout
+        implements PresentableView, TextureView.SurfaceTextureListener {
 
     private static final String TAG = "DropMissionView";
 
@@ -46,8 +56,8 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
 
     private static final long CONTROL_LOOP_INTERVAL_MS = 50;
     private static final long FINAL_RTH_DELAY_MS = 5_000L;
-    private static final double DROP_RADIUS_M = 2.0;
-    private static final float MIN_DROP_ALTITUDE_M = 6.1f;
+    private static final double DROP_RADIUS_M = 0.2;
+    private static final float MIN_DROP_ALTITUDE_M = 8.0f;
     private static final float Kp_HORIZONTAL = 0.4f;
     private static final float Kp_VERTICAL = 0.6f;
     private static final float MAX_HORIZONTAL_SPEED = 5.0f;
@@ -93,6 +103,15 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     private ScrollView scrollLog;
     private TextView tvLog;
 
+    // ── Live downward preview + gimbal ────────────────────────────────────────
+    private static final int PREVIEW_HEIGHT_DP = 400;
+    private static final float NADIR_GIMBAL_PITCH_DEG = -90f;
+    private static final double GIMBAL_ROTATION_TIME_S = 1.0;
+    private TextureView videoTextureView;
+    private DJICodecManager codecManager;
+    private VideoFeeder.VideoDataListener videoDataListener;
+    private Gimbal gimbal;
+
     public PayloadDropMissionView(Context context) {
         super(context);
         init(context);
@@ -114,23 +133,47 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         setOrientation(VERTICAL);
         setPadding(24, 24, 24, 24);
 
+        // ── Live downward camera preview (pinned at top) ──────────────────────
+        FrameLayout videoFrame = new FrameLayout(context);
+        videoFrame.setBackgroundColor(Color.BLACK);
+        addView(videoFrame, new LayoutParams(LayoutParams.MATCH_PARENT, dp(PREVIEW_HEIGHT_DP)));
+
+        videoTextureView = new TextureView(context);
+        videoTextureView.setSurfaceTextureListener(this);
+        videoFrame.addView(videoTextureView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        videoDataListener = (bytes, size) -> {
+            if (codecManager != null) {
+                codecManager.sendDataToDecoder(bytes, size);
+            }
+        };
+
+        // ── Everything else scrolls below the preview ─────────────────────────
+        scrollLog = new ScrollView(context);
+        addView(scrollLog, new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout content = new LinearLayout(context);
+        content.setOrientation(VERTICAL);
+        content.setPadding(0, dp(8), 0, dp(8));
+        scrollLog.addView(content, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+
         tvStatus = new TextView(context);
         tvStatus.setText("Mission: IDLE");
         tvStatus.setTextSize(16f);
         tvStatus.setPadding(0, 0, 0, 6);
-        addView(tvStatus);
+        content.addView(tvStatus);
 
         tvDronePos = new TextView(context);
         tvDronePos.setText("Drone: unknown");
         tvDronePos.setTextSize(13f);
         tvDronePos.setPadding(0, 0, 0, 14);
-        addView(tvDronePos);
+        content.addView(tvDronePos);
 
         TextView dropLabel = new TextView(context);
         dropLabel.setText("Drop Target Coordinates:");
         dropLabel.setTextSize(14f);
         dropLabel.setPadding(0, 0, 0, 4);
-        addView(dropLabel);
+        content.addView(dropLabel);
 
         LinearLayout dropInputRow = new LinearLayout(context);
         dropInputRow.setOrientation(HORIZONTAL);
@@ -187,7 +230,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         etDropLng.addTextChangedListener(dropTargetWatcher);
         etDropAlt.addTextChangedListener(dropTargetWatcher);
 
-        addView(dropInputRow);
+        content.addView(dropInputRow);
 
         LinearLayout btnRow = new LinearLayout(context);
         btnRow.setOrientation(HORIZONTAL);
@@ -217,7 +260,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         btnReturnHome.setOnClickListener(v -> requestReturnToHome());
         btnRow.addView(btnReturnHome);
 
-        addView(btnRow);
+        content.addView(btnRow);
 
         // ── Manual pin actuation (ground testing / reloading) ─────────────────
         LinearLayout pinRow = new LinearLayout(context);
@@ -240,17 +283,12 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         btnClosePin.setOnClickListener(v -> onClosePin());
         pinRow.addView(btnClosePin);
 
-        addView(pinRow);
+        content.addView(pinRow);
 
         tvLog = new TextView(context);
         tvLog.setText("Log:\n");
         tvLog.setTextSize(11f);
-
-        scrollLog = new ScrollView(context);
-        scrollLog.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 500));
-        scrollLog.addView(tvLog);
-        addView(scrollLog);
+        content.addView(tvLog);
 
         initFlightController();
     }
@@ -263,6 +301,7 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
         if (DJISampleApplication.getProductInstance() instanceof Aircraft) {
             Aircraft aircraft = (Aircraft) DJISampleApplication.getProductInstance();
             flightController = aircraft.getFlightController();
+            gimbal = aircraft.getGimbal();
             if (flightController != null) {
                 flightController.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
                 flightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
@@ -691,11 +730,24 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
     }
 
     @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        registerVideoFeed();
+        pointGimbalDown();
+    }
+
+    @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         // Catch-all: make sure the latest typed coordinate is saved before this
         // view is torn down (e.g. switching mission modes).
         persistDropTargetFromFields();
+        unregisterVideoFeed();
+        if (codecManager != null) {
+            codecManager.cleanSurface();
+            codecManager.destroyCodec();
+            codecManager = null;
+        }
         if (missionRunning || isTakingOff || returnHomePending) {
             missionRunning = false;
             isTakingOff = false;
@@ -709,5 +761,80 @@ public class PayloadDropMissionView extends LinearLayout implements PresentableV
             FlightControllerStateDispatcher.removeListener(flightStateListener);
             flightController.setVirtualStickModeEnabled(false, null);
         }
+    }
+
+    // ── Live downward preview + gimbal ────────────────────────────────────────
+
+    /** Rotates the gimbal to point straight down so the preview shows the ground. */
+    private void pointGimbalDown() {
+        if (gimbal == null && DJISampleApplication.getProductInstance() instanceof Aircraft) {
+            gimbal = ((Aircraft) DJISampleApplication.getProductInstance()).getGimbal();
+        }
+        if (gimbal == null) {
+            appendLog("Gimbal unavailable; cannot point camera down.");
+            return;
+        }
+        Rotation rotation = new Rotation.Builder()
+                .mode(RotationMode.ABSOLUTE_ANGLE)
+                .pitch(NADIR_GIMBAL_PITCH_DEG)
+                .yaw(Rotation.NO_ROTATION)
+                .roll(Rotation.NO_ROTATION)
+                .time(GIMBAL_ROTATION_TIME_S)
+                .build();
+        gimbal.rotate(rotation, error ->
+                appendLog(error == null
+                        ? "Gimbal pointed straight down (-90 deg)."
+                        : "Gimbal pitch-down failed: " + error.getDescription()));
+    }
+
+    private void registerVideoFeed() {
+        try {
+            VideoFeeder.VideoFeed feed = VideoFeeder.getInstance().getPrimaryVideoFeed();
+            if (feed != null
+                    && videoDataListener != null
+                    && !feed.getListeners().contains(videoDataListener)) {
+                feed.addVideoDataListener(videoDataListener);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void unregisterVideoFeed() {
+        try {
+            VideoFeeder.VideoFeed feed = VideoFeeder.getInstance().getPrimaryVideoFeed();
+            if (feed != null && videoDataListener != null) {
+                feed.removeVideoDataListener(videoDataListener);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+        if (codecManager == null) {
+            codecManager = new DJICodecManager(getContext(), surface, width, height);
+        }
+    }
+
+    @Override
+    public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+    }
+
+    @Override
+    public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        if (codecManager != null) {
+            codecManager.cleanSurface();
+            codecManager.destroyCodec();
+            codecManager = null;
+        }
+        return false;
+    }
+
+    @Override
+    public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density);
     }
 }

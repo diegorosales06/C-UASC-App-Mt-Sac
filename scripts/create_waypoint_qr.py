@@ -21,6 +21,15 @@ CSV rows can be:
     name,latitude,longitude,altitude_m
     latitude,longitude,altitude_m
     latitude,longitude
+
+Payload formats (--format):
+    waypoints  (default) "name,lat,lng,alt" lines under a WAYPOINTS header,
+                         for the VS Waypoint / Time Trial importers.
+    latlng               bare "latitude,longitude" lines (no name, no altitude),
+                         for the Search & Record boundary importer. Use 4 points
+                         (the search-box corners) for that screen, e.g.:
+        python3 scripts/create_waypoint_qr.py -i scripts/my_waypoints.csv \
+            --format latlng --output search_boundary_qr.png
 """
 
 from __future__ import annotations
@@ -142,9 +151,18 @@ def load_waypoints_from_csv(csv_path: Path) -> List[Waypoint]:
     return waypoints
 
 
-def build_payload(waypoints: Sequence[Waypoint]) -> str:
+def build_payload(waypoints: Sequence[Waypoint], fmt: str = "waypoints") -> str:
     if not waypoints:
         raise ValueError("Add at least one waypoint before creating a QR code.")
+
+    if fmt == "latlng":
+        # Bare "latitude,longitude" per line — no name, no altitude, no header.
+        # Matches the Search & Record screen's QR import (BoundaryQrParser),
+        # which reads lat,lng pairs and ignores any extra columns.
+        return "\n".join(
+            f"{latitude:.7f},{longitude:.7f}"
+            for _name, latitude, longitude, _altitude_m in waypoints
+        )
 
     lines = ["WAYPOINTS"]
     for name, latitude, longitude, altitude_m in waypoints:
@@ -185,6 +203,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional CSV file instead of the WAYPOINTS list in this script.",
     )
     parser.add_argument(
+        "-f",
+        "--format",
+        choices=["waypoints", "latlng"],
+        default="waypoints",
+        help=(
+            "QR payload format. 'waypoints' (default) writes 'name,lat,lng,alt' "
+            "lines under a WAYPOINTS header for the VS Waypoint / Time Trial "
+            "importers. 'latlng' writes bare 'latitude,longitude' lines (no name, "
+            "no altitude) for the Search & Record boundary importer."
+        ),
+    )
+    parser.add_argument(
         "--payload-only",
         action="store_true",
         help="Print the QR text payload and do not create an image.",
@@ -200,10 +230,17 @@ def main() -> int:
             if args.input
             else normalize_script_waypoints(WAYPOINTS)
         )
-        payload = build_payload(waypoints)
+        payload = build_payload(waypoints, args.format)
 
         print("QR payload:")
         print(payload)
+
+        if args.format == "latlng" and len(waypoints) != 4:
+            print(
+                f"\nNote: 'latlng' produced {len(waypoints)} points. The Search & "
+                "Record boundary import expects exactly 4 corners.",
+                file=sys.stderr,
+            )
 
         if args.payload_only:
             return 0

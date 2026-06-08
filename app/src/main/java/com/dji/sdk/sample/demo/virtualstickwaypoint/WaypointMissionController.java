@@ -67,7 +67,7 @@ public class WaypointMissionController {
     // ── Dwell duration ────────────────────────────────────────────────────────
     // Time (ms) the drone hovers at each waypoint before proceeding.
     // Change this value to adjust the stop duration.
-    private static final long WAYPOINT_DWELL_MS = 10_000L;
+    private static final long WAYPOINT_DWELL_MS = 1_000L;
     private static final long FINAL_RTH_DELAY_MS = 5_000L;
 
     // ── Control loop timing ───────────────────────────────────────────────────
